@@ -14,19 +14,7 @@ Jasne! Możemy rozłożyć Twój projekt na **etapy**, które prowadzą od najpr
 
 ---
 
-## **Etap 2 – Wstęp do GibberLink: bot ↔ bot**
-
-**Cel:** Bot potrafi wykryć innego bota i przełączyć się na komunikację przez GibberLink (GGWave).
-**Co implementujesz:**
-
-1. Integracja GGWave → konwersja tekst → dźwięk i odwrotnie.
-2. Logika wykrywająca, że rozmówcą jest inny bot.
-3. Wysyłanie i odbieranie danych przez GibberLink zamiast normalnej mowy.
-   **Efekt:** Bot może rozmawiać z drugim botem szybciej i efektywniej, używając sygnałów audio.
-
----
-
-## **Etap 3 – Człowiek + bot + bot (mieszana rozmowa)**
+## **Etap 2 – Człowiek + bot + bot (mieszana rozmowa)**
 
 **Cel:** System może prowadzić równoległą rozmowę: człowiek i jeden lub więcej botów.
 **Co implementujesz:**
@@ -35,6 +23,18 @@ Jasne! Możemy rozłożyć Twój projekt na **etapy**, które prowadzą od najpr
 2. Logika decydująca, kiedy używać TTS, a kiedy GibberLink.
 3. Obsługa jednoczesnej wymiany informacji między botami i człowiekiem.
    **Efekt:** Człowiek rozmawia z botem, a bot równocześnie wymienia informacje z innymi botami przez GibberLink.
+
+---
+
+## **Etap 3 – Wstęp do GibberLink: bot ↔ bot**
+
+**Cel:** Bot potrafi wykryć innego bota i przełączyć się na komunikację przez GibberLink (GGWave).
+**Co implementujesz:**
+
+1. Integracja GGWave → konwersja tekst → dźwięk i odwrotnie.
+2. Logika wykrywająca, że rozmówcą jest inny bot.
+3. Wysyłanie i odbieranie danych przez GibberLink zamiast normalnej mowy.
+   **Efekt:** Bot może rozmawiać z drugim botem szybciej i efektywniej, używając sygnałów audio.
 
 ---
 
