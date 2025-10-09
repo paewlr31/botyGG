@@ -23,67 +23,67 @@ def main():
 
     # Główna pętla rozmowy
     while True:
-        user_input = listen()
-        if user_input:
-            logging.info(f"🧍 Ty: {user_input}")
-            last_input = user_input
-
-            # Obsługa komend
-            if user_input.lower().startswith("dodaj bota"):
-                try:
-                    # Poprawione parsowanie: np. "Dodaj bota Rafał jako pisarz" -> nazwa: "Rafał"
-                    parts = user_input.lower().split(" jako ")
-                    bot_name = parts[0].replace("dodaj bota ", "").strip()
-                    bot_character = parts[1].strip()
-                    bots.append(Bot(bot_name, f"Jesteś {bot_character}, który odpowiada w języku polskim."))
-                    response = f"Dodano bota {bot_name} jako {bot_character}."
-                    logging.info(f"🤖 System: {response}")
-                    speak(response)
-                except IndexError:
-                    response = "Błąd: Podaj nazwę bota i charakter, np. 'Dodaj bota Rafał jako pisarz'."
-                    logging.info(f"🤖 System: {response}")
-                    speak(response)
-                continue
-
-            if user_input.lower().startswith("idź bot"):
-                try:
-                    bot_name = user_input.lower().replace("idź bot ", "").strip()
-                    bots_before = len(bots)
-                    bots = [bot for bot in bots if bot.name.lower() != bot_name.lower()]
-                    if len(bots) < bots_before:
-                        response = f"Usunięto bota {bot_name}."
-                    else:
-                        response = f"Nie znaleziono bota {bot_name}."
-                    logging.info(f"🤖 System: {response}")
-                    speak(response)
-                except:
-                    response = "Błąd: Podaj poprawną nazwę bota, np. 'Idź bot Rafał'."
-                    logging.info(f"🤖 System: {response}")
-                    speak(response)
-                continue
-
-            if "do widzenia" in user_input.lower():
-                response = "Do widzenia! Kończę rozmowę."
-                logging.info(f"🤖 System: {response}")
-                speak(response)
-                break
-
-        # Jeśli są boty
-        if bots:
-            # Jeśli użytkownik mówił, każdy bot odpowiada użytkownikowi
+        try:
+            user_input = listen()  # listen ma teraz timeout=5 sekund
             if user_input:
-                for bot in bots:
-                    response = get_response(user_input, bot.system_prompt)
-                    logging.info(f"🤖 {bot.name}: {response}")
-                    try:
-                        speak(f"{bot.name} mówi: {response}")
-                        last_input = response
-                        time.sleep(0.5)
-                    except Exception as e:
-                        logging.error(f"Błąd TTS dla {bot.name}: {str(e)}")
+                logging.info(f"🧍 Ty: {user_input}")
+                last_input = user_input
 
-            # Boty rozmawiają między sobą (zawsze, jeśli jest co najmniej jeden bot)
-            if len(bots) >= 1:
+                # Obsługa komend
+                if user_input.lower().startswith("dodaj bota"):
+                    try:
+                        # Poprawione parsowanie: np. "Dodaj bota Rafał jako pisarz" -> nazwa: "Rafał"
+                        parts = user_input.lower().split(" jako ")
+                        bot_name = parts[0].replace("dodaj bota ", "").strip()
+                        bot_character = parts[1].strip()
+                        bots.append(Bot(bot_name, f"Jesteś {bot_character}, który odpowiada w języku polskim."))
+                        response = f"Dodano bota {bot_name} jako {bot_character}."
+                        logging.info(f"🤖 System: {response}")
+                        speak(response)
+                    except IndexError:
+                        response = "Błąd: Podaj nazwę bota i charakter, np. 'Dodaj bota Rafał jako pisarz'."
+                        logging.info(f"🤖 System: {response}")
+                        speak(response)
+                    continue
+
+                if user_input.lower().startswith("idź bot"):
+                    try:
+                        bot_name = user_input.lower().replace("idź bot ", "").strip()
+                        bots_before = len(bots)
+                        bots = [bot for bot in bots if bot.name.lower() != bot_name.lower()]
+                        if len(bots) < bots_before:
+                            response = f"Usunięto bota {bot_name}."
+                        else:
+                            response = f"Nie znaleziono bota {bot_name}."
+                        logging.info(f"🤖 System: {response}")
+                        speak(response)
+                    except:
+                        response = "Błąd: Podaj poprawną nazwę bota, np. 'Idź bot Rafał'."
+                        logging.info(f"🤖 System: {response}")
+                        speak(response)
+                    continue
+
+                if "do widzenia" in user_input.lower():
+                    response = "Do widzenia! Kończę rozmowę."
+                    logging.info(f"🤖 System: {response}")
+                    speak(response)
+                    break
+
+            # Jeśli są boty
+            if bots:
+                # Jeśli użytkownik mówił, każdy bot odpowiada użytkownikowi
+                if user_input:
+                    for bot in bots:
+                        response = get_response(user_input, bot.system_prompt)
+                        logging.info(f"🤖 {bot.name}: {response}")
+                        try:
+                            speak(f"{bot.name} mówi: {response}")
+                            last_input = response
+                            time.sleep(0.5)
+                        except Exception as e:
+                            logging.error(f"Błąd TTS dla {bot.name}: {str(e)}")
+
+                # Boty rozmawiają między sobą (zawsze, jeśli jest co najmniej jeden bot)
                 logging.info("🤖 Boty rozmawiają między sobą...")
                 # Losowy bot mówi
                 current_bot = random.choice(bots)
@@ -97,11 +97,15 @@ def main():
                 except Exception as e:
                     logging.error(f"Błąd TTS dla {current_bot.name}: {str(e)}")
 
-        # Jeśli nie ma botów i użytkownik coś powiedział (poza komendami)
-        if not bots and user_input and not user_input.lower().startswith(("dodaj bota", "do widzenia")):
-            response = "Nie ma żadnych botów. Dodaj bota komendą 'Dodaj bota <nazwa> jako <charakter>'."
-            logging.info(f"🤖 System: {response}")
-            speak(response)
+            # Jeśli nie ma botów i użytkownik coś powiedział (poza komendami)
+            if not bots and user_input and not user_input.lower().startswith(("dodaj bota", "do widzenia")):
+                response = "Nie ma żadnych botów. Dodaj bota komendą 'Dodaj bota <nazwa> jako <charakter>'."
+                logging.info(f"🤖 System: {response}")
+                speak(response)
+
+        except Exception as e:
+            logging.error(f"Błąd w głównej pętli: {str(e)}")
+            continue
 
 def get_response(user_input, system_prompt="Jesteś pomocnym asystentem, który odpowiada w języku polskim."):
     from openai import OpenAI

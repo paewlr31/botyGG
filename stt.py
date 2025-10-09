@@ -3,12 +3,14 @@ import speech_recognition as sr
 def listen():
     r = sr.Recognizer()
     with sr.Microphone() as source:
-        print("🎤 Mów teraz...")
-        audio = r.listen(source)
-    try:
-        text = r.recognize_google(audio, language="pl-PL")
-        return text
-    except sr.UnknownValueError:
-        return ""
-    except sr.RequestError:
-        return "Błąd połączenia ze STT"
+        print("🎤 Mów teraz... (5 sekund na rozpoczęcie)")
+        try:
+            audio = r.listen(source, timeout=5)  # 5 sekund na rozpoczęcie mówienia
+            text = r.recognize_google(audio, language="pl-PL")
+            return text
+        except sr.WaitTimeoutError:
+            return ""  # Brak wypowiedzi w ciągu 5 sekund
+        except sr.UnknownValueError:
+            return ""  # Niezrozumiała wypowiedź
+        except sr.RequestError as e:
+            return f"Błąd połączenia ze STT: {str(e)}"
