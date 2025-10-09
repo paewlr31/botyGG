@@ -1,0 +1,16 @@
+# Ignoruj klucz API
+klucz.env
+
+# Inne typowe dla Pythona
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+.env
+.vscode/
+.idea/
+.DS_Store
+*.egg-info/ 

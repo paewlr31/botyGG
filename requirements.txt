@@ -1,0 +1,11 @@
+speechrecognition
+pyttsx3
+pyaudio
+transformers
+torch
+openai
+python-dotenv
+gtts
+playsound
+ggwave-wheels
+numpy
