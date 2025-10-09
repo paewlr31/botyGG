@@ -20,14 +20,16 @@ def main():
     # Pusta lista botów na start
     bots = []
     last_input = None  # Przechowuje ostatnią wypowiedź (użytkownika lub bota)
+    last_speaker = None  # Przechowuje nazwę ostatniego bota, który mówił (lub None, jeśli to użytkownik)
 
     # Główna pętla rozmowy
     while True:
         try:
-            user_input = listen()  # listen ma teraz timeout=5 sekund
+            user_input = listen()  # listen ma timeout=5 sekund
             if user_input:
                 logging.info(f"🧍 Ty: {user_input}")
                 last_input = user_input
+                last_speaker = None  # Użytkownik mówił, resetujemy ostatniego mówcę
 
                 # Obsługa komend
                 if user_input.lower().startswith("dodaj bota"):
@@ -53,6 +55,8 @@ def main():
                         bots = [bot for bot in bots if bot.name.lower() != bot_name.lower()]
                         if len(bots) < bots_before:
                             response = f"Usunięto bota {bot_name}."
+                            if last_speaker and last_speaker.lower() == bot_name.lower():
+                                last_speaker = None  # Resetuj, jeśli usunęto ostatniego mówcę
                         else:
                             response = f"Nie znaleziono bota {bot_name}."
                         logging.info(f"🤖 System: {response}")
@@ -79,23 +83,42 @@ def main():
                         try:
                             speak(f"{bot.name} mówi: {response}")
                             last_input = response
+                            last_speaker = bot.name  # Aktualizujemy ostatniego mówcę
                             time.sleep(0.5)
                         except Exception as e:
                             logging.error(f"Błąd TTS dla {bot.name}: {str(e)}")
 
-                # Boty rozmawiają między sobą (zawsze, jeśli jest co najmniej jeden bot)
-                logging.info("🤖 Boty rozmawiają między sobą...")
-                # Losowy bot mówi
-                current_bot = random.choice(bots)
-                context = last_input if last_input else "Cześć, co słychać?"
-                response = get_response(context, current_bot.system_prompt)
-                logging.info(f"🤖 {current_bot.name}: {response}")
-                try:
-                    speak(f"{current_bot.name} mówi: {response}")
-                    last_input = response
-                    time.sleep(0.5)
-                except Exception as e:
-                    logging.error(f"Błąd TTS dla {current_bot.name}: {str(e)}")
+                # Boty rozmawiają między sobą (z odstępem, jeśli jest co najmniej jeden bot)
+                if len(bots) >= 1:
+                    # Wybierz bota, który nie mówił jako ostatni
+                    available_bots = [bot for bot in bots if bot.name != last_speaker]
+                    if available_bots:  # Jeśli jest ktoś, kto może mówić
+                        logging.info("🤖 Boty rozmawiają między sobą...")
+                        current_bot = random.choice(available_bots)
+                        context = last_input if last_input else "Cześć, co słychać?"
+                        response = get_response(context, current_bot.system_prompt)
+                        logging.info(f"🤖 {current_bot.name}: {response}")
+                        try:
+                            speak(f"{current_bot.name} mówi: {response}")
+                            last_input = response
+                            last_speaker = current_bot.name  # Aktualizujemy ostatniego mówcę
+                            time.sleep(0.5)
+                        except Exception as e:
+                            logging.error(f"Błąd TTS dla {current_bot.name}: {str(e)}")
+                    elif len(bots) == 1 and last_speaker is None:
+                        # Jeśli jest tylko jeden bot i użytkownik właśnie mówił
+                        logging.info("🤖 Boty rozmawiają między sobą...")
+                        current_bot = bots[0]
+                        context = last_input if last_input else "Cześć, co słychać?"
+                        response = get_response(context, current_bot.system_prompt)
+                        logging.info(f"🤖 {current_bot.name}: {response}")
+                        try:
+                            speak(f"{current_bot.name} mówi: {response}")
+                            last_input = response
+                            last_speaker = current_bot.name
+                            time.sleep(0.5)
+                        except Exception as e:
+                            logging.error(f"Błąd TTS dla {current_bot.name}: {str(e)}")
 
             # Jeśli nie ma botów i użytkownik coś powiedział (poza komendami)
             if not bots and user_input and not user_input.lower().startswith(("dodaj bota", "do widzenia")):
