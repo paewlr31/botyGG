@@ -5,7 +5,6 @@ from bot import get_response
 from tts import speak
 import random
 
-# Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class Bot:
@@ -25,7 +24,8 @@ def main():
     # Główna pętla rozmowy
     while True:
         try:
-            user_input = listen()  # listen ma timeout=5 sekund
+            #STT !!!!!!!!!!!
+            user_input = listen()  # listen ma timeout=5 sekund 
             if user_input:
                 logging.info(f"🧍 Ty: {user_input}")
                 last_input = user_input
@@ -34,6 +34,7 @@ def main():
                 # Obsługa komend
                 if user_input.lower().startswith("dodaj bota"):
                     try:
+                        #SPEAK == TTS
                         # Poprawione parsowanie: np. "Dodaj bota Rafał jako pisarz" -> nazwa: "Rafał"
                         parts = user_input.lower().split(" jako ")
                         bot_name = parts[0].replace("dodaj bota ", "").strip()
