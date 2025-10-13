@@ -14,7 +14,7 @@ def get_response(user_input, system_prompt):
                 {"role": "system", "content": system_prompt},  # Używamy przekazanego system_prompt
                 {"role": "user", "content": user_input}
             ],
-            max_tokens=100,
+            max_tokens=30,
             temperature=0.8,
             top_p=0.95
         )
