@@ -16,51 +16,61 @@ except Exception as e:
     logging.error(f"❌ Błąd inicjalizacji GGWave: {e}")
     ggwave_instance = None
 
-def send_via_ggwave(message: str):
-    """
-    Koduje tekst do formatu dźwiękowego GGWave (bytes). Zachowane dla zgodności.
-    """
-    if not ggwave_instance:
-        logging.error("GGWave nie jest zainicjalizowany.")
-        return None
+import ggwave
+import sounddevice as sd
+import numpy as np
+import logging
 
-    if not message:
-        return None
-
+def send_via_ggwave(message: str, protocolId=1, volume=10):
+    """
+    Wysyła wiadomość GGWave przez głośniki.
+    """
     try:
-        payload = message.encode("utf-8")
-        data = ggwave_instance.encode(payload)
-        logging.info(f"📡 [GGWave] Zakodowano wiadomość ({len(data)} bajtów).")
-        return np.frombuffer(data, dtype=np.uint8)
-    except Exception as e:
-        logging.error(f"Błąd przy kodowaniu GGWave: {e}")
-        return None
-
-def receive_via_ggwave(data):
-    """
-    Dekoduje dane audio z GGWave z powrotem na tekst. Zachowane dla zgodności.
-    """
-    if not ggwave_instance:
-        logging.error("GGWave nie jest zainicjalizowany.")
-        return None
-
-    if data is None:
-        return None
-
-    try:
-        if isinstance(data, np.ndarray):
-            data = data.tobytes()
-
-        decoded = ggwave_instance.decode(data)
-        if decoded:
-            decoded_text = decoded.decode("utf-8")
-            logging.info(f"📡 [GGWave] Odebrano: {decoded_text}")
-            return decoded_text
-        else:
-            logging.warning("⚠️ GGWave nie zwrócił żadnego tekstu.")
+        if not message:
             return None
+
+        # ✅ w ggwave-wheels encode() to globalna funkcja, nie metoda obiektu
+        waveform = ggwave.encode(message, protocolId, volume)
+        audio = np.frombuffer(waveform, dtype=np.float32)
+        sd.play(audio, samplerate=48000)
+        sd.wait()
+        logging.info(f"📡 [GGWave] Wysłano: {message}")
+        return waveform
     except Exception as e:
-        logging.error(f"Błąd przy dekodowaniu GGWave: {e}")
+        logging.error(f"Błąd przy wysyłaniu GGWave: {e}")
+        return None
+import ggwave
+import sounddevice as sd
+import numpy as np
+import logging
+
+def receive_via_ggwave(timeout=5.0):
+    """
+    Nasłuchuje mikrofonu i próbuje zdekodować wiadomość GGWave.
+    """
+    try:
+        decoded = None
+
+        def callback(indata, frames, time, status):
+            nonlocal decoded
+            if status:
+                logging.warning(status)
+            data_bytes = indata.tobytes()
+            res = ggwave.decode(data_bytes)
+            if res:
+                decoded = res.decode("utf-8")
+
+        with sd.InputStream(callback=callback, channels=1, samplerate=48000, dtype='float32', blocksize=1024):
+            sd.sleep(int(timeout * 1000))
+
+        if decoded:
+            logging.info(f"📡 [GGWave] Odebrano: {decoded}")
+        else:
+            logging.info("⚠️ GGWave nie odebrał niczego.")
+
+        return decoded
+    except Exception as e:
+        logging.error(f"Błąd przy odbiorze GGWave: {e}")
         return None
 
 def play_ggwave_like_sound(message: str):

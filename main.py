@@ -93,40 +93,26 @@ def main():
                             logging.error(f"Błąd TTS dla {bot.name}: {str(e)}")
 
                 # ======= BOT↔BOT – GGWAVE TRYB =======
-                elif silence_counter >= 2 and len(bots) > 1:
-                    logging.info("🤖 [BOT↔BOT] Wykryto rozmowę między botami – aktywuję GGWave.")
-                    available_bots = [bot for bot in bots if bot.name != last_speaker]
+                if silence_counter >= 2 and len(bots) > 1:
+                    current_bot = random.choice([b for b in bots if b.name != last_speaker])
+                    context = last_input if last_input else "Cześć, co słychać?"
+                    response = get_response(context, current_bot.system_prompt)
 
-                    if available_bots:
-                        current_bot = random.choice(available_bots)
-                        context = last_input if last_input else "Cześć, co słychać?"
-                        response = get_response(context, current_bot.system_prompt)
-                        logging.info(f"🤖 {current_bot.name}: {response}")
+                    logging.info(f"🤖 {current_bot.name}: {response}")
 
-                        # Używamy syntetycznego piszczenia GGWave zamiast TTS
-                        encoded = send_via_ggwave(response)  
-                        if encoded is not None:
-                            decoded = receive_via_ggwave(encoded)
-                            if decoded:
-                                logging.info(f"📡 {current_bot.name} (GGWave): {decoded}")
-                                last_input = decoded
-                                last_speaker = current_bot.name
-                                play_ggwave_like_sound(response)  
-                                time.sleep(0.5)
-                            else:
-                                logging.warning("GGWave: ROZPOCZĘCIE PISZCZENIA")
-                                logging.info(f"🤖 {current_bot.name} (fallback): {response}")
-                                play_ggwave_like_sound(response)  
-                                last_input = response
-                                last_speaker = current_bot.name
-                                time.sleep(0.5)
-                        else:
-                            logging.warning("⚠️ GGWave: Nie udało się wysłać.")
-                            logging.info(f"🤖 {current_bot.name} (fallback): {response}")
-                            play_ggwave_like_sound(response) 
-                            last_input = response
-                            last_speaker = current_bot.name
-                            time.sleep(0.5)
+                    # Wyślij przez GGWave
+                    send_via_ggwave(response)
+                    # Odbierz z mikrofonu
+                    decoded = receive_via_ggwave(timeout=3.0)
+                    if decoded:
+                        logging.info(f"📡 {current_bot.name} (GGWave odebrane): {decoded}")
+                        last_input = decoded
+                    else:
+                        logging.warning("⚠️ GGWave nie odebrał niczego, fallback do TTS")
+                        speak(f"{current_bot.name} mówi: {response}")
+                        last_input = response
+
+                    last_speaker = current_bot.name
 
            
                 elif len(bots) >= 1:
