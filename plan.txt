@@ -1,4 +1,5 @@
-## **Etap 1 – Podstawowy system człowiek ↔ bot**
+
+## **Etap 1 – Podstawowy system człowiek ↔ bot** (tydzień)
 
 **Cel:** Bot potrafi rozmawiać z człowiekiem w czasie rzeczywistym.
 
@@ -9,34 +10,36 @@
 
 ---
 
-**Tworzenie botów - kazdy jest osobny agentem stworzonym przez polecenie słowne 
-i tworzy sie osoban instancja OpenAI ChatGPT
-Wszytskie boty są instancjami modelu działającymi równolegle
-Myślenie jest dynamiczne - zawsze keidy wywołujemy get_response()
+**Tworzenie botów - każdy jest osobny agentem stworzonym przez polecenie słowne 
+i tworzy się osobna instancja OpenAI ChatGPT
+Wszystkie boty są instancjami modelu działającymi równolegle
+Myślenie jest dynamiczne - zawsze kiedy wywołujemy get_response()
 
-## **Etap 2 – Człowiek + bot + bot (mieszana rozmowa)**
+## **Etap 2 – Człowiek + bot + bot (mieszana rozmowa)** (tydzień)
 
 **Cel:** System może prowadzić równoległą rozmowę: człowiek i jeden lub więcej botów.
 
 1. Utrzymanie **równoległych kanałów audio** (ludzie i bota).
-2. Logika decydująca, kiedy używać TTS, a kiedy GibberLink.
-3. Obsługa jednoczesnej wymiany informacji między botami i człowiekiem.
+2. Obsługa jednoczesnej wymiany informacji między botami i człowiekiem.
    **Efekt:** Człowiek rozmawia z botem, a bot równocześnie wymienia informacje z innymi botami.
 
 ---
 
+Tutaj ile to będzie trwać to nie wiem ???
 ## **Etap 3 – Wstęp do GibberLink: człowiek (normalnie) + bot ↔ bot**
 
 **Cel:** Bot potrafi wykryć innego bota i przełączyć się na komunikację przez GibberLink (GGWave).
 
 1. Integracja GGWave → konwersja tekst → dźwięk i odwrotnie.
-2. Logika wykrywająca, że rozmówcą jest inny bot.
-3. Wysyłanie i odbieranie danych przez GibberLink zamiast normalnej mowy.
+2. Logika decydująca, kiedy używać TTS, a kiedy GibberLink.
+3. Logika wykrywająca, że rozmówcą jest inny bot.
+4. Wysyłanie i odbieranie danych przez GibberLink zamiast normalnej mowy.
    **Efekt:** Bot może rozmawiać z drugim botem szybciej i efektywniej, używając sygnałów audio, ale tylko wtedy gdy nie ma człowieka !!!
-
+5. UWAGA! Jesli w rozmowei jest chcoiaz jeden czlowieka to boty mowia ludzkim głosem wiec GGvawe dodajemy
+tylko w sekcji "Boty rozmawiają ze sobą" w main - tam jest aktywowana funkcjonalność GGwave
 ---
 
-## **Etap 4 – Wieloosobowa rozmowa (grupowa)**
+## **Etap 4 – Wieloosobowa rozmowa (grupowa)** (tydzień)
 
 **Cel:** Obsługa wielu botów i ludzi w tym samym czasie.
 
@@ -47,5 +50,7 @@ Myślenie jest dynamiczne - zawsze keidy wywołujemy get_response()
 
 ---
 
+Ostatni tydzień LATEX
 
-WebRTC
+
+WebRTC - jak zostanie czas

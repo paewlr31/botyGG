@@ -6,12 +6,12 @@ from openai import OpenAI
 load_dotenv("klucz.env")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def get_response(user_input):
+def get_response(user_input, system_prompt):
     try:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Jesteś pomocnym asystentem, który odpowiada w języku polskim."},
+                {"role": "system", "content": system_prompt},  # Używamy przekazanego system_prompt
                 {"role": "user", "content": user_input}
             ],
             max_tokens=100,
