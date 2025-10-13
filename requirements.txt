@@ -8,4 +8,5 @@ python-dotenv
 gtts
 playsound
 ggwave-wheels
+soundevice
 numpy

@@ -1,6 +1,6 @@
 # Ignoruj klucz API
 klucz.env
-
+.vs/
 # Inne typowe dla Pythona
 __pycache__/
 *.pyc

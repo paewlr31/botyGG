@@ -4,9 +4,10 @@ import random
 from stt import listen
 from bot import get_response
 from tts import speak
-from gglink import send_via_ggwave, receive_via_ggwave  # 🧩 nowy import
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+import numpy as np
+import sounddevice as sd 
+import ggwave  
+from gglink  import send_via_ggwave, receive_via_ggwave, play_ggwave_like_sound 
 
 class Bot:
     def __init__(self, name, system_prompt):
@@ -20,17 +21,17 @@ def main():
     bots = []
     last_input = None
     last_speaker = None
-    silence_counter = 0  # licznik ciszy (do wykrywania BOT↔BOT)
+    silence_counter = 0  
 
     while True:
         try:
-            user_input = listen()  # nasłuch człowieka (timeout=5 sekund)
+            user_input = listen()  
 
             if user_input:
                 silence_counter = 0
                 logging.info(f"🧍 Ty: {user_input}")
                 last_input = user_input
-                last_speaker = None  # użytkownik mówił, resetujemy
+                last_speaker = None  
 
                 # ======= KOMENDY =======
                 if user_input.lower().startswith("dodaj bota"):
@@ -74,12 +75,11 @@ def main():
                     break
 
             else:
-                # brak wypowiedzi człowieka – rośnie licznik ciszy
+             
                 silence_counter += 1
 
-            # ======= BOTY =======
             if bots:
-                # Jeśli użytkownik mówił – boty odpowiadają człowiekowi
+          
                 if user_input:
                     for bot in bots:
                         response = get_response(user_input, bot.system_prompt)
@@ -101,24 +101,34 @@ def main():
                         current_bot = random.choice(available_bots)
                         context = last_input if last_input else "Cześć, co słychać?"
                         response = get_response(context, current_bot.system_prompt)
+                        logging.info(f"🤖 {current_bot.name}: {response}")
 
-                        # Używamy GGWave zamiast TTS
-                        encoded = send_via_ggwave(response)
-                        if encoded:
+                        # Używamy syntetycznego piszczenia GGWave zamiast TTS
+                        encoded = send_via_ggwave(response)  
+                        if encoded is not None:
                             decoded = receive_via_ggwave(encoded)
                             if decoded:
                                 logging.info(f"📡 {current_bot.name} (GGWave): {decoded}")
                                 last_input = decoded
                                 last_speaker = current_bot.name
+                                play_ggwave_like_sound(response)  
                                 time.sleep(0.5)
                             else:
-                                logging.warning("⚠️ GGWave: Nie udało się odebrać. Używam TTS fallback.")
-                                speak(f"{current_bot.name} mówi: {response}")
+                                logging.warning("GGWave: ROZPOCZĘCIE PISZCZENIA")
+                                logging.info(f"🤖 {current_bot.name} (fallback): {response}")
+                                play_ggwave_like_sound(response)  
+                                last_input = response
+                                last_speaker = current_bot.name
+                                time.sleep(0.5)
                         else:
-                            logging.warning("⚠️ GGWave: Nie udało się wysłać. Używam TTS fallback.")
-                            speak(f"{current_bot.name} mówi: {response}")
+                            logging.warning("⚠️ GGWave: Nie udało się wysłać.")
+                            logging.info(f"🤖 {current_bot.name} (fallback): {response}")
+                            play_ggwave_like_sound(response) 
+                            last_input = response
+                            last_speaker = current_bot.name
+                            time.sleep(0.5)
 
-                # ======= BOT↔BOT – klasyczny (jeśli jeden bot lub brak ciszy) =======
+           
                 elif len(bots) >= 1:
                     available_bots = [bot for bot in bots if bot.name != last_speaker]
                     if available_bots:
@@ -135,7 +145,6 @@ def main():
                         except Exception as e:
                             logging.error(f"Błąd TTS dla {current_bot.name}: {str(e)}")
 
-            # ======= Brak botów =======
             if not bots and user_input and not user_input.lower().startswith(("dodaj bota", "do widzenia")):
                 response = "Nie ma żadnych botów. Dodaj bota komendą 'Dodaj bota <nazwa> jako <charakter>'."
                 logging.info(f"🤖 System: {response}")
