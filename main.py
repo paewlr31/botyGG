@@ -38,7 +38,7 @@ def main():
                 last_input = user_input
                 last_speaker = None
 
-                # ======= KOMENDY =======
+                # polecenia
                 if user_input.lower().startswith("dodaj bota"):
                     try:
                         parts = user_input.lower().split(" jako ")
@@ -95,42 +95,38 @@ def main():
                         except Exception as e:
                             logging.error(f"Błąd TTS dla {bot.name}: {str(e)}")
 
-                # ======= BOT↔BOT – GGWAVE TRYB =======
+                #  GGWAVE  same boty
                 if silence_counter >= 2 and len(bots) > 1:
                     current_bot = random.choice([b for b in bots if b.name != last_speaker])
                     context = last_input if last_input else "Cześć, co słychać?"
                     response = get_response(context, current_bot.system_prompt)
                     logging.info(f"🤖 {current_bot.name}: {response}")
 
-                    # Tworzymy kolejkę do zbierania odpowiedzi od nasłuchujących botów
+                    # odpowiedzi od słuchajacyhc botow
                     result_queue = Queue()
                     stop_event = threading.Event()
                     threads = []
 
-                    # Startujemy wątki nasłuchujące dla wszystkich botów poza mówiącym
+                    # Start odp
                     for bot in [b for b in bots if b.name != current_bot.name]:
                         thread = threading.Thread(
                             target=receive_via_ggwave,
-                            args=(result_queue, stop_event, bot.name, 12.0)  # silence_timeout=2s
+                            args=(result_queue, stop_event, bot.name, 12.0)  #tu do zmiany na 2 sek ciszy czy cos potem
                         )
                         threads.append(thread)
                         thread.start()
 
-                    # Zwiększone opóźnienie, aby upewnić się, że nasłuchiwanie zaczęło się
+                    #słychanie bo sa bledy jak za szybko
                     time.sleep(1.0)
-
-                    # Wysłanie wiadomości przez GGWave
+                    #gg plus czekanie plus koniec sluchania
                     send_thread = threading.Thread(target=send_via_ggwave, args=(response,))
                     send_thread.start()
 
-                    # Czekamy na zakończenie wysyłania i dodatkowy czas na odbiór
                     send_thread.join()
-                    time.sleep(2.0)  # Dodatkowy czas na propagację i dekodowanie
+                    time.sleep(2.0)  
 
-                    # Sygnalizujemy botom, aby przestały nasłuchiwać
                     stop_event.set()
 
-                    # Czekamy na zakończenie wątków
                     for thread in threads:
                         thread.join()
 
@@ -153,7 +149,6 @@ def main():
                         last_input = response
                         last_speaker = current_bot.name
 
-                # Tryb normalny (bez GGWave)
                 elif len(bots) >= 1:
                     available_bots = [bot for bot in bots if bot.name != last_speaker]
                     if available_bots:

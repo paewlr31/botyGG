@@ -7,9 +7,6 @@ import time
 import threading
 from queue import Queue
 
-
-
-# Inicjalizacja GGWave
 try:
     ggwave_instance = ggwave.init()
     logging.info("✅ GGWave zainicjalizowany poprawnie.")
@@ -18,16 +15,13 @@ except Exception as e:
     ggwave_instance = None
 
 def send_via_ggwave(message: str, protocolId: int = 1, volume: int = 60):
-    """
-    Koduje tekst do fali audio (float32) i odtwarza przez głośniki.
-    Zwraca waveform (bytes/bytearray) lub None.
-    """
+ 
     try:
         if not message:
             logging.warning("Pusta wiadomość, pomijam wysyłanie.")
             return None
 
-        # Ogranicz długość wiadomości do 100 znaków, aby zmieścić się w limicie GGWave
+        # limit GGWave
         if len(message.encode('utf-8')) > 100:
             logging.warning(f"Wiadomość zbyt długa ({len(message.encode('utf-8'))} bajtów), obcinam do 100 znaków.")
             message = message[:100]
@@ -38,17 +32,14 @@ def send_via_ggwave(message: str, protocolId: int = 1, volume: int = 60):
         sd.play(audio, samplerate=48000)
         sd.wait()
         logging.info(f"📡 [GGWave] Wysłano: {message}")
-        time.sleep(0.3)  # Zwiększone opóźnienie na propagację dźwięku
+        time.sleep(0.3)  
         return waveform
     except Exception as e:
         logging.error(f"Błąd przy wysyłaniu GGWave: {e}")
         return None
 
 def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str, silence_timeout: float = 15.0):
-    """
-    Nasłuchuje mikrofonu, aż do momentu zdekodowania wiadomości lub ciszy przez `silence_timeout` sekund.
-    Wynik zapisuje do kolejki. Zatrzymuje się, gdy stop_event jest ustawiony.
-    """
+
     if ggwave_instance is None:
         logging.error("❌ Brak instancji GGWave — nie można odbierać.")
         queue.put((bot_name, None))
@@ -69,7 +60,7 @@ def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str,
         try:
             # Sprawdź poziom audio - KLUCZOWE!
             audio_level = np.max(np.abs(indata))
-            if audio_level > 0.001:  # Jeśli jest jakiś sygnał
+            if audio_level > 0.001:  
                 last_data_time = time.time()
                 logging.debug(f"[{bot_name}] Poziom audio: {audio_level:.6f}")
 
@@ -82,7 +73,7 @@ def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str,
                     logging.info(f"🎯 [{bot_name}] ZDEKODOWANO: '{decoded_text}'")
                     decoded = decoded_text
                     queue.put((bot_name, decoded))
-                    # NIE ZATRZYMUJ STREAMU! - pozwól działać dalej
+                   
                     return
                 except Exception as e:
                     logging.debug(f"[{bot_name}] Błąd dekodowania UTF-8: {e}")
@@ -96,36 +87,33 @@ def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str,
     try:
         logging.info(f"🎧 {bot_name} nasłuchuje GGWave (timeout: {silence_timeout}s)...")
         
-        # POPRAWIONE USTAWIENIA STREAMU:
         with sd.InputStream(
             callback=callback, 
             channels=1, 
             samplerate=48000, 
             dtype='float32', 
-            blocksize=1024,  # ZWIĘKSZONY - lepsza wydajność
+            blocksize=1024,  
             latency='low',
-            device=sd.default.device[0]  # JAWNE UŻYCIE URZĄDZENIA
+            device=sd.default.device[0]  
         ) as stream:
             
             while not stop_event.is_set():
-                # Sprawdź timeout ciszy
+                #cisz a15 s
                 if time.time() - last_data_time > silence_timeout:
                     logging.info(f"⏰ [{bot_name}] Timeout ciszy ({silence_timeout}s)")
                     break
-                    
-                # Maksymalny czas nasłuchiwania
+                #szumanie
                 if time.time() - start_time > 30:
                     logging.info(f"⏰ [{bot_name}] Maksymalny czas nasłuchiwania")
                     break
                     
-                time.sleep(0.1)  # Optymalne uśpienie
+                time.sleep(0.1)  
                 
     except Exception as e:
         logging.error(f"❌ Błąd InputStream dla {bot_name}: {e}")
         queue.put((bot_name, None))
         return
 
-    # ZAWSZE zwróć wynik przez kolejkę
     if decoded:
         logging.info(f"✅ {bot_name} ODEBRAŁ: '{decoded}'")
         queue.put((bot_name, decoded))
@@ -133,16 +121,3 @@ def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str,
         logging.info(f"❌ {bot_name} nic nie odebrał")
         queue.put((bot_name, None))
 
-def play_ggwave_like_sound(duration: float = 2.0):
-    """
-    Krótki testowy dźwięk do debugowania.
-    """
-    try:
-        sr = 48000
-        t = np.linspace(0, duration, int(sr * duration), False)
-        tone = 0.2 * np.sin(2 * np.pi * 6000 * t)
-        sd.play(tone, sr)
-        sd.wait()
-        logging.info("Testowy dźwięk odtworzony.")
-    except Exception as e:
-        logging.error(f"Błąd odtwarzania testowego tonu: {e}")
