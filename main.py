@@ -1,178 +1,175 @@
+import sys
 import logging
-import time
-import random
-from stt import listen
-from bot import get_response
-from tts import speak
-from gglink import send_via_ggwave, receive_via_ggwave
+import socket
 import threading
+import json
 from queue import Queue
-
-import sounddevice as sd
-sd.default.device = (13, 3)  # (input_id, output_id)
-
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTextEdit, QPushButton, QVBoxLayout, QWidget
+from PyQt5.QtCore import QThread, pyqtSignal
+from bot_manager import BotManager
+from stt import listen
+from tts import speak
+import subprocess
+import os
+from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
-class Bot:
-    def __init__(self, name, system_prompt):
-        self.name = name
-        self.system_prompt = system_prompt
+# Wątek nasłuchiwania STT
+class STTThread(QThread):
+    text_received = pyqtSignal(str)
 
-def main():
-    logging.info("🤖 Witaj! Rozpoczynamy rozmowę. Powiedz 'do widzenia', aby zakończyć.")
-    logging.info("Komendy: 'Dodaj bota <nazwa> jako <charakter>', 'Idź bot <nazwa>'")
+    def run(self):
+        while True:
+            text = listen()
+            if text:
+                self.text_received.emit(text)
 
-    bots = []
-    last_input = None
-    last_speaker = None
-    silence_counter = 0
+# Wątek serwera socket
+class ServerThread(QThread):
+    message_received = pyqtSignal(str, str)
 
-    while True:
+    def __init__(self):
+        super().__init__()
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.clients = []
+        self.port = self.find_free_port()
+
+    def find_free_port(self):
+        port = 12345
+        while True:
+            try:
+                self.server_socket.bind(('localhost', port))
+                logging.info(f"Zajęto port {port}")
+                return port
+            except OSError as e:
+                logging.warning(f"Port {port} zajęty: {e}")
+                port += 1
+                if port > 65535:
+                    raise Exception("Nie znaleziono wolnego portu")
+
+    def run(self):
+        self.server_socket.listen(5)
+        logging.info(f"Serwer nasłuchuje na porcie {self.port}")
+        while True:
+            try:
+                client_socket, _ = self.server_socket.accept()
+                self.clients.append(client_socket)
+                threading.Thread(target=self.handle_client, args=(client_socket,), daemon=True).start()
+            except Exception as e:
+                logging.error(f"Błąd serwera: {e}")
+                break
+
+    def handle_client(self, client_socket):
+        while True:
+            try:
+                data = client_socket.recv(1024).decode()
+                if data:
+                    message = json.loads(data)
+                    self.message_received.emit(message['bot_name'], message['message'])
+            except Exception as e:
+                logging.error(f"Błąd klienta: {e}")
+                self.clients.remove(client_socket)
+                client_socket.close()
+                break
+
+    def send_to_bots(self, message):
+        for client in self.clients[:]:
+            try:
+                client.send(json.dumps(message).encode())
+            except Exception as e:
+                logging.error(f"Błąd wysyłania do klienta: {e}")
+                self.clients.remove(client)
+                client.close()
+
+# Główne okno GUI
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("System Botów")
+        self.setGeometry(100, 100, 600, 400)
+
+        # GUI
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True)
+        self.start_button = QPushButton("🎤 Rozpocznij nasłuchiwanie")
+        self.start_button.clicked.connect(self.start_listening)
+
+        layout = QVBoxLayout()
+        layout.addWidget(self.log_area)
+        layout.addWidget(self.start_button)
+
+        container = QWidget()
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+
+        # Inicjalizacja
+        load_dotenv("klucz.env")
+        self.bot_manager = BotManager(os.getenv("OPENAI_API_KEY"))
+        self.stt_thread = STTThread()
+        self.stt_thread.text_received.connect(self.handle_input)
         try:
-            user_input = listen()
-
-            if user_input:
-                silence_counter = 0
-                logging.info(f"🧍 Ty: {user_input}")
-                last_input = user_input
-                last_speaker = None
-
-                # polecenia
-                if user_input.lower().startswith("dodaj bota"):
-                    try:
-                        parts = user_input.lower().split(" jako ")
-                        bot_name = parts[0].replace("dodaj bota ", "").strip()
-                        bot_character = parts[1].strip()
-                        bots.append(Bot(bot_name, f"Jesteś {bot_character}, który odpowiada w języku polskim."))
-                        response = f"Dodano bota {bot_name} jako {bot_character}."
-                        logging.info(f"🤖 System: {response}")
-                        speak(response)
-                    except IndexError:
-                        response = "Błąd: Podaj nazwę bota i charakter, np. 'Dodaj bota Rafał jako pisarz'."
-                        logging.info(f"🤖 System: {response}")
-                        speak(response)
-                    continue
-
-                if user_input.lower().startswith("idź bot"):
-                    try:
-                        bot_name = user_input.lower().replace("idź bot ", "").strip()
-                        bots_before = len(bots)
-                        bots = [bot for bot in bots if bot.name.lower() != bot_name.lower()]
-                        if len(bots) < bots_before:
-                            response = f"Usunięto bota {bot_name}."
-                            if last_speaker and last_speaker.lower() == bot_name.lower():
-                                last_speaker = None
-                        else:
-                            response = f"Nie znaleziono bota {bot_name}."
-                        logging.info(f"🤖 System: {response}")
-                        speak(response)
-                    except Exception:
-                        response = "Błąd: Podaj poprawną nazwę bota, np. 'Idź bot Rafał'."
-                        logging.info(f"🤖 System: {response}")
-                        speak(response)
-                    continue
-
-                if "do widzenia" in user_input.lower():
-                    response = "Do widzenia! Kończę rozmowę."
-                    logging.info(f"🤖 System: {response}")
-                    speak(response)
-                    break
-
-            else:
-                silence_counter += 1
-
-            if bots:
-                if user_input:
-                    for bot in bots:
-                        response = get_response(user_input, bot.system_prompt)
-                        logging.info(f"🤖 {bot.name}: {response}")
-                        try:
-                            speak(f"{bot.name} mówi: {response}")
-                            last_input = response
-                            last_speaker = bot.name
-                            time.sleep(0.5)
-                        except Exception as e:
-                            logging.error(f"Błąd TTS dla {bot.name}: {str(e)}")
-
-                #  GGWAVE  same boty
-                if silence_counter >= 2 and len(bots) > 1:
-                    current_bot = random.choice([b for b in bots if b.name != last_speaker])
-                    context = last_input if last_input else "Cześć, co słychać?"
-                    response = get_response(context, current_bot.system_prompt)
-                    logging.info(f"🤖 {current_bot.name}: {response}")
-
-                    # odpowiedzi od słuchajacyhc botow
-                    result_queue = Queue()
-                    stop_event = threading.Event()
-                    threads = []
-
-                    # Start odp
-                    for bot in [b for b in bots if b.name != current_bot.name]:
-                        thread = threading.Thread(
-                            target=receive_via_ggwave,
-                            args=(result_queue, stop_event, bot.name, 12.0)  #tu do zmiany na 2 sek ciszy czy cos potem
-                        )
-                        threads.append(thread)
-                        thread.start()
-
-                    #słychanie bo sa bledy jak za szybko
-                    time.sleep(1.0)
-                    #gg plus czekanie plus koniec sluchania
-                    send_thread = threading.Thread(target=send_via_ggwave, args=(response,))
-                    send_thread.start()
-
-                    send_thread.join()
-                    time.sleep(2.0)  
-
-                    stop_event.set()
-
-                    for thread in threads:
-                        thread.join()
-
-                    # Zbieramy wyniki z kolejki
-                    received_messages = []
-                    while not result_queue.empty():
-                        bot_name, decoded = result_queue.get()
-                        if decoded:
-                            received_messages.append((bot_name, decoded))
-
-                    if received_messages:
-                        # Wybieramy pierwszego bota, który odebrał wiadomość
-                        bot_name, decoded = random.choice(received_messages)
-                        logging.info(f"📡 {bot_name} (GGWave odebrane): {decoded}")
-                        last_input = decoded
-                        last_speaker = current_bot.name
-                    else:
-                        logging.warning("⚠️ Żaden bot nie odebrał wiadomości przez GGWave, fallback do TTS")
-                        speak(f"{current_bot.name} mówi: {response}")
-                        last_input = response
-                        last_speaker = current_bot.name
-
-                elif len(bots) >= 1:
-                    available_bots = [bot for bot in bots if bot.name != last_speaker]
-                    if available_bots:
-                        logging.info("🤖 Boty rozmawiają między sobą (tryb normalny)...")
-                        current_bot = random.choice(available_bots)
-                        context = last_input if last_input else "Cześć, co słychać?"
-                        response = get_response(context, current_bot.system_prompt)
-                        logging.info(f"🤖 {current_bot.name}: {response}")
-                        try:
-                            speak(f"{current_bot.name} mówi: {response}")
-                            last_input = response
-                            last_speaker = current_bot.name
-                            time.sleep(0.5)
-                        except Exception as e:
-                            logging.error(f"Błąd TTS dla {current_bot.name}: {str(e)}")
-
-            if not bots and user_input and not user_input.lower().startswith(("dodaj bota", "do widzenia")):
-                response = "Nie ma żadnych botów. Dodaj bota komendą 'Dodaj bota <nazwa> jako <charakter>'."
-                logging.info(f"🤖 System: {response}")
-                speak(response)
-
+            self.server_thread = ServerThread()
+            self.server_thread.message_received.connect(self.handle_bot_message)
+            self.server_thread.start()
         except Exception as e:
-            logging.error(f"Błąd w głównej pętli: {str(e)}", exc_info=True)
-            continue
+            self.log(f"Błąd inicjalizacji serwera: {e}")
+            sys.exit(1)
+
+    def log(self, message):
+        self.log_area.append(message)
+
+    def start_listening(self):
+        self.log("🎤 Nasłuchiwanie...")
+        if not self.stt_thread.isRunning():
+            self.stt_thread.start()
+
+    def handle_input(self, user_input):
+        self.log(f"🧍 Ty: {user_input}")
+        if user_input.lower().startswith("dodaj bota"):
+            try:
+                parts = user_input.lower().split(" jako ")
+                bot_name = parts[0].replace("dodaj bota ", "").strip()
+                bot_character = parts[1].strip()
+                self.bot_manager.add_bot(bot_name, f"Jesteś {bot_character}, który odpowiada w języku polskim.")
+                self.log(f"Dodano bota {bot_name} jako {bot_character}")
+                speak(f"Dodano bota {bot_name} jako {bot_character}")
+                subprocess.Popen(["python", "bot.py", bot_name, bot_character, str(self.server_thread.port)])
+                self.server_thread.send_to_bots({"type": "add_bot", "bot_name": bot_name, "bot_character": bot_character})
+            except IndexError:
+                self.log("Błąd: Podaj nazwę bota i charakter, np. 'Dodaj bota Rafał jako pisarz'.")
+                speak("Błąd: Podaj nazwę bota i charakter.")
+            return
+
+        if user_input.lower().startswith("idź bot"):
+            try:
+                bot_name = user_input.lower().replace("idź bot ", "").strip()
+                if self.bot_manager.remove_bot(bot_name):
+                    self.log(f"Usunięto bota {bot_name}")
+                    speak(f"Usunięto bota {bot_name}")
+                    self.server_thread.send_to_bots({"type": "remove_bot", "bot_name": bot_name})
+                else:
+                    self.log(f"Nie znaleziono bota {bot_name}")
+                    speak(f"Nie znaleziono bota {bot_name}")
+            except:
+                self.log("Błąd: Podaj poprawną nazwę bota.")
+                speak("Błąd: Podaj poprawną nazwę bota.")
+            return
+
+        if user_input.lower() == "do widzenia":
+            self.log("Do widzenia! Kończę rozmowę.")
+            speak("Do widzenia! Kończę rozmowę.")
+            self.server_thread.send_to_bots({"type": "exit"})
+            sys.exit()
+
+        self.bot_manager.process_user_input(user_input, self.log, self.server_thread.send_to_bots, speak)
+
+    def handle_bot_message(self, bot_name, message):
+        self.log(f"📡 {bot_name}: {message}")
+        self.bot_manager.process_bot_message(bot_name, message, self.log, self.server_thread.send_to_bots, speak)
 
 if __name__ == "__main__":
-    main()
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())

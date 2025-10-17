@@ -5,12 +5,12 @@ def listen():
     with sr.Microphone() as source:
         print("🎤 Mów teraz... (5 sekund na rozpoczęcie)")
         try:
-            audio = r.listen(source, timeout=5)  
+            audio = r.listen(source, timeout=5)
             text = r.recognize_google(audio, language="pl-PL")
             return text
         except sr.WaitTimeoutError:
-            return ""  #czekanie
+            return ""
         except sr.UnknownValueError:
-            return ""  #wtf
+            return ""
         except sr.RequestError as e:
             return f"Błąd połączenia ze STT: {str(e)}"
