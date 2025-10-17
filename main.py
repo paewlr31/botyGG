@@ -1,290 +1,178 @@
-import sys
 import logging
-import socket
-import threading
-import json
-from queue import Queue
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTextEdit, QPushButton, QVBoxLayout, QWidget, QLabel, QLineEdit, QHBoxLayout
-from PyQt5.QtCore import QThread, pyqtSignal, QObject
-from bot_manager import BotManager
+import time
+import random
 from stt import listen
+from bot import get_response
 from tts import speak
-import subprocess
-import os
-from dotenv import load_dotenv
+from gglink import send_via_ggwave, receive_via_ggwave
+import threading
+from queue import Queue
 
-# Niestandardowy handler logowania dla GUI
-class QTextEditLogger(logging.Handler, QObject):
-    append_log = pyqtSignal(str)
+import sounddevice as sd
+sd.default.device = (13, 3)  # (input_id, output_id)
 
-    def __init__(self):
-        super().__init__()
-        QObject.__init__(self)
 
-    def emit(self, record):
-        msg = self.format(record)
-        self.append_log.emit(msg)
-
-# Konfiguracja logowania
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Wątek nasłuchiwania STT
-class STTThread(QThread):
-    text_received = pyqtSignal(str)
-    listening_started = pyqtSignal()  # Nowy sygnał dla rozpoczęcia nasłuchiwania
+class Bot:
+    def __init__(self, name, system_prompt):
+        self.name = name
+        self.system_prompt = system_prompt
 
-    def run(self):
-        while True:
-            self.listening_started.emit()  # Emituj sygnał przed każdym nasłuchiwaniem
-            text = listen()
-            if text:
-                self.text_received.emit(text)
+def main():
+    logging.info("🤖 Witaj! Rozpoczynamy rozmowę. Powiedz 'do widzenia', aby zakończyć.")
+    logging.info("Komendy: 'Dodaj bota <nazwa> jako <charakter>', 'Idź bot <nazwa>'")
 
-# Wątek serwera socket
-class ServerThread(QThread):
-    message_received = pyqtSignal(str, str)
-    status_changed = pyqtSignal(str)
+    bots = []
+    last_input = None
+    last_speaker = None
+    silence_counter = 0
 
-    def __init__(self):
-        super().__init__()
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.clients = []
-        self.port = self.find_free_port()
-
-    def find_free_port(self):
-        port = 12345
-        while True:
-            try:
-                self.server_socket.bind(('localhost', port))
-                logging.info(f"Zajęto port {port}")
-                return port
-            except OSError as e:
-                logging.warning(f"Port {port} zajęty: {e}")
-                port += 1
-                if port > 65535:
-                    raise Exception("Nie znaleziono wolnego portu")
-
-    def run(self):
-        self.server_socket.listen(5)
-        logging.info(f"Serwer nasłuchuje na porcie {self.port}")
-        self.status_changed.emit(f"Serwer działa na porcie {self.port}")
-        while True:
-            try:
-                client_socket, _ = self.server_socket.accept()
-                self.clients.append(client_socket)
-                threading.Thread(target=self.handle_client, args=(client_socket,), daemon=True).start()
-            except Exception as e:
-                logging.error(f"Błąd serwera: {e}")
-                self.status_changed.emit(f"Błąd serwera: {e}")
-                break
-
-    def handle_client(self, client_socket):
-        while True:
-            try:
-                data = client_socket.recv(1024).decode()
-                if data:
-                    message = json.loads(data)
-                    self.message_received.emit(message['bot_name'], message['message'])
-            except Exception as e:
-                logging.error(f"Błąd klienta: {e}")
-                self.clients.remove(client_socket)
-                client_socket.close()
-                break
-
-    def send_to_bots(self, message):
-        for client in self.clients[:]:
-            try:
-                client.send(json.dumps(message).encode())
-            except Exception as e:
-                logging.error(f"Błąd wysyłania do klienta: {e}")
-                self.clients.remove(client)
-                client.close()
-
-# Główne okno GUI
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("System Botów")
-        self.setGeometry(100, 100, 800, 600)
-
-        # GUI
-        self.log_area = QTextEdit()
-        self.log_area.setReadOnly(True)
-        self.start_button = QPushButton("🎤 Włącz/Wyłącz nasłuchiwanie")
-        self.start_button.clicked.connect(self.toggle_listening)
-        self.status_label = QLabel("Status: Inicjalizacja...")
-        self.bot_name_input = QLineEdit()
-        self.bot_name_input.setPlaceholderText("Nazwa bota")
-        self.bot_char_input = QLineEdit()
-        self.bot_char_input.setPlaceholderText("Charakter bota")
-        self.add_bot_button = QPushButton("Dodaj bota")
-        self.add_bot_button.clicked.connect(self.add_bot_manual)
-        self.remove_bot_button = QPushButton("Usuń bota")
-        self.remove_bot_button.clicked.connect(self.remove_bot_manual)
-        self.active_bots_label = QLabel("Aktywne boty: brak")
-
-        # Układ
-        input_layout = QHBoxLayout()
-        input_layout.addWidget(self.bot_name_input)
-        input_layout.addWidget(self.bot_char_input)
-        input_layout.addWidget(self.add_bot_button)
-        input_layout.addWidget(self.remove_bot_button)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.active_bots_label)
-        layout.addWidget(self.log_area)
-        layout.addLayout(input_layout)
-        layout.addWidget(self.start_button)
-
-        container = QWidget()
-        container.setLayout(layout)
-        self.setCentralWidget(container)
-
-        # Inicjalizacja
-        load_dotenv("klucz.env")
-        self.bot_manager = BotManager(os.getenv("OPENAI_API_KEY"))
-        self.stt_thread = STTThread()
-        self.stt_thread.text_received.connect(self.handle_input)
-        self.stt_thread.listening_started.connect(self.on_listening_started)  # Podłącz nowy sygnał
-        self.is_listening = False
-
-        # Konfiguracja logowania do GUI
-        self.logger = QTextEditLogger()
-        self.logger.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-        self.logger.append_log.connect(self.log)
-        logging.getLogger().addHandler(self.logger)
-
-        # Inicjalizacja serwera
+    while True:
         try:
-            self.server_thread = ServerThread()
-            self.server_thread.message_received.connect(self.handle_bot_message)
-            self.server_thread.status_changed.connect(self.update_status)
-            self.server_thread.start()
+            user_input = listen()
+
+            if user_input:
+                silence_counter = 0
+                logging.info(f"🧍 Ty: {user_input}")
+                last_input = user_input
+                last_speaker = None
+
+                # polecenia
+                if user_input.lower().startswith("dodaj bota"):
+                    try:
+                        parts = user_input.lower().split(" jako ")
+                        bot_name = parts[0].replace("dodaj bota ", "").strip()
+                        bot_character = parts[1].strip()
+                        bots.append(Bot(bot_name, f"Jesteś {bot_character}, który odpowiada w języku polskim."))
+                        response = f"Dodano bota {bot_name} jako {bot_character}."
+                        logging.info(f"🤖 System: {response}")
+                        speak(response)
+                    except IndexError:
+                        response = "Błąd: Podaj nazwę bota i charakter, np. 'Dodaj bota Rafał jako pisarz'."
+                        logging.info(f"🤖 System: {response}")
+                        speak(response)
+                    continue
+
+                if user_input.lower().startswith("idź bot"):
+                    try:
+                        bot_name = user_input.lower().replace("idź bot ", "").strip()
+                        bots_before = len(bots)
+                        bots = [bot for bot in bots if bot.name.lower() != bot_name.lower()]
+                        if len(bots) < bots_before:
+                            response = f"Usunięto bota {bot_name}."
+                            if last_speaker and last_speaker.lower() == bot_name.lower():
+                                last_speaker = None
+                        else:
+                            response = f"Nie znaleziono bota {bot_name}."
+                        logging.info(f"🤖 System: {response}")
+                        speak(response)
+                    except Exception:
+                        response = "Błąd: Podaj poprawną nazwę bota, np. 'Idź bot Rafał'."
+                        logging.info(f"🤖 System: {response}")
+                        speak(response)
+                    continue
+
+                if "do widzenia" in user_input.lower():
+                    response = "Do widzenia! Kończę rozmowę."
+                    logging.info(f"🤖 System: {response}")
+                    speak(response)
+                    break
+
+            else:
+                silence_counter += 1
+
+            if bots:
+                if user_input:
+                    for bot in bots:
+                        response = get_response(user_input, bot.system_prompt)
+                        logging.info(f"🤖 {bot.name}: {response}")
+                        try:
+                            speak(f"{bot.name} mówi: {response}")
+                            last_input = response
+                            last_speaker = bot.name
+                            time.sleep(0.5)
+                        except Exception as e:
+                            logging.error(f"Błąd TTS dla {bot.name}: {str(e)}")
+
+                #  GGWAVE  same boty
+                if silence_counter >= 2 and len(bots) > 1:
+                    current_bot = random.choice([b for b in bots if b.name != last_speaker])
+                    context = last_input if last_input else "Cześć, co słychać?"
+                    response = get_response(context, current_bot.system_prompt)
+                    logging.info(f"🤖 {current_bot.name}: {response}")
+
+                    # odpowiedzi od słuchajacyhc botow
+                    result_queue = Queue()
+                    stop_event = threading.Event()
+                    threads = []
+
+                    # Start odp
+                    for bot in [b for b in bots if b.name != current_bot.name]:
+                        thread = threading.Thread(
+                            target=receive_via_ggwave,
+                            args=(result_queue, stop_event, bot.name, 12.0)  #tu do zmiany na 2 sek ciszy czy cos potem
+                        )
+                        threads.append(thread)
+                        thread.start()
+
+                    #słychanie bo sa bledy jak za szybko
+                    time.sleep(1.0)
+                    #gg plus czekanie plus koniec sluchania
+                    send_thread = threading.Thread(target=send_via_ggwave, args=(response,))
+                    send_thread.start()
+
+                    send_thread.join()
+                    time.sleep(2.0)  
+
+                    stop_event.set()
+
+                    for thread in threads:
+                        thread.join()
+
+                    # Zbieramy wyniki z kolejki
+                    received_messages = []
+                    while not result_queue.empty():
+                        bot_name, decoded = result_queue.get()
+                        if decoded:
+                            received_messages.append((bot_name, decoded))
+
+                    if received_messages:
+                        # Wybieramy pierwszego bota, który odebrał wiadomość
+                        bot_name, decoded = random.choice(received_messages)
+                        logging.info(f"📡 {bot_name} (GGWave odebrane): {decoded}")
+                        last_input = decoded
+                        last_speaker = current_bot.name
+                    else:
+                        logging.warning("⚠️ Żaden bot nie odebrał wiadomości przez GGWave, fallback do TTS")
+                        speak(f"{current_bot.name} mówi: {response}")
+                        last_input = response
+                        last_speaker = current_bot.name
+
+                elif len(bots) >= 1:
+                    available_bots = [bot for bot in bots if bot.name != last_speaker]
+                    if available_bots:
+                        logging.info("🤖 Boty rozmawiają między sobą (tryb normalny)...")
+                        current_bot = random.choice(available_bots)
+                        context = last_input if last_input else "Cześć, co słychać?"
+                        response = get_response(context, current_bot.system_prompt)
+                        logging.info(f"🤖 {current_bot.name}: {response}")
+                        try:
+                            speak(f"{current_bot.name} mówi: {response}")
+                            last_input = response
+                            last_speaker = current_bot.name
+                            time.sleep(0.5)
+                        except Exception as e:
+                            logging.error(f"Błąd TTS dla {current_bot.name}: {str(e)}")
+
+            if not bots and user_input and not user_input.lower().startswith(("dodaj bota", "do widzenia")):
+                response = "Nie ma żadnych botów. Dodaj bota komendą 'Dodaj bota <nazwa> jako <charakter>'."
+                logging.info(f"🤖 System: {response}")
+                speak(response)
+
         except Exception as e:
-            self.log(f"Błąd inicjalizacji serwera: {e}")
-            sys.exit(1)
-
-        # Automatyczne uruchomienie nasłuchiwania
-        self.start_listening()
-
-        # Aktualizacja listy botów
-        self.update_active_bots()
-
-    def log(self, message):
-        self.log_area.append(message)
-        self.log_area.ensureCursorVisible()
-
-    def update_status(self, status):
-        self.status_label.setText(f"Status: {status}")
-
-    def update_active_bots(self):
-        bot_names = [bot.name for bot in self.bot_manager.bots]
-        if bot_names:
-            self.active_bots_label.setText(f"Aktywne boty: {', '.join(bot_names)}")
-        else:
-            self.active_bots_label.setText("Aktywne boty: brak")
-
-    def toggle_listening(self):
-        if self.is_listening:
-            self.is_listening = False
-            self.stt_thread.terminate()
-            self.start_button.setText("🎤 Włącz nasłuchiwanie")
-            self.log("🎤 Nasłuchiwanie wyłączone")
-            self.update_status("Nasłuchiwanie wyłączone")
-        else:
-            self.start_listening()
-
-    def start_listening(self):
-        self.is_listening = True
-        self.start_button.setText("🎤 Wyłącz nasłuchiwanie")
-        if not self.stt_thread.isRunning():
-            self.stt_thread.start()
-        self.update_status("Nasłuchiwanie aktywne")
-
-    def on_listening_started(self):
-        self.log("🎤 Nasłuchiwanie...")  # Wyświetl komunikat w GUI przy każdym rozpoczęciu nasłuchiwania
-
-    def add_bot_manual(self):
-        bot_name = self.bot_name_input.text().strip()
-        bot_character = self.bot_char_input.text().strip()
-        if not bot_name or not bot_character:
-            self.log("Błąd: Podaj nazwę i charakter bota.")
-            speak("Błąd: Podaj nazwę i charakter bota.")
-            return
-        self.bot_manager.add_bot(bot_name, f"Jesteś {bot_character}, który odpowiada w języku polskim.")
-        self.log(f"Dodano bota {bot_name} jako {bot_character}")
-        speak(f"Dodano bota {bot_name} jako {bot_character}")
-        subprocess.Popen(["python", "bot.py", bot_name, bot_character, str(self.server_thread.port)])
-        self.server_thread.send_to_bots({"type": "add_bot", "bot_name": bot_name, "bot_character": bot_character})
-        self.update_active_bots()
-        self.bot_name_input.clear()
-        self.bot_char_input.clear()
-
-    def remove_bot_manual(self):
-        bot_name = self.bot_name_input.text().strip()
-        if not bot_name:
-            self.log("Błąd: Podaj nazwę bota do usunięcia.")
-            speak("Błąd: Podaj nazwę bota do usunięcia.")
-            return
-        if self.bot_manager.remove_bot(bot_name):
-            self.log(f"Usunięto bota {bot_name}")
-            speak(f"Usunięto bota {bot_name}")
-            self.server_thread.send_to_bots({"type": "remove_bot", "bot_name": bot_name})
-        else:
-            self.log(f"Nie znaleziono bota {bot_name}")
-            speak(f"Nie znaleziono bota {bot_name}")
-        self.update_active_bots()
-        self.bot_name_input.clear()
-
-    def handle_input(self, user_input):
-        self.log(f"🧍 Ty: {user_input}")
-        if user_input.lower().startswith("dodaj bota"):
-            try:
-                parts = user_input.lower().split(" jako ")
-                bot_name = parts[0].replace("dodaj bota ", "").strip()
-                bot_character = parts[1].strip()
-                self.bot_manager.add_bot(bot_name, f"Jesteś {bot_character}, który odpowiada w języku polskim.")
-                self.log(f"Dodano bota {bot_name} jako {bot_character}")
-                speak(f"Dodano bota {bot_name} jako {bot_character}")
-                subprocess.Popen(["python", "bot.py", bot_name, bot_character, str(self.server_thread.port)])
-                self.server_thread.send_to_bots({"type": "add_bot", "bot_name": bot_name, "bot_character": bot_character})
-                self.update_active_bots()
-            except IndexError:
-                self.log("Błąd: Podaj nazwę bota i charakter, np. 'Dodaj bota Rafał jako pisarz'.")
-                speak("Błąd: Podaj nazwę bota i charakter.")
-            return
-
-        if user_input.lower().startswith("idź bot"):
-            try:
-                bot_name = user_input.lower().replace("idź bot ", "").strip()
-                if self.bot_manager.remove_bot(bot_name):
-                    self.log(f"Usunięto bota {bot_name}")
-                    speak(f"Usunięto bota {bot_name}")
-                    self.server_thread.send_to_bots({"type": "remove_bot", "bot_name": bot_name})
-                    self.update_active_bots()
-                else:
-                    self.log(f"Nie znaleziono bota {bot_name}")
-                    speak(f"Nie znaleziono bota {bot_name}")
-            except:
-                self.log("Błąd: Podaj poprawną nazwę bota.")
-                speak("Błąd: Podaj poprawną nazwę bota.")
-            return
-
-        if user_input.lower() == "do widzenia":
-            self.log("Do widzenia! Kończę rozmowę.")
-            speak("Do widzenia! Kończę rozmowę.")
-            self.server_thread.send_to_bots({"type": "exit"})
-            sys.exit()
-
-        self.bot_manager.process_user_input(user_input, self.log, self.server_thread.send_to_bots, speak)
-
-    def handle_bot_message(self, bot_name, message):
-        self.log(f"📡 {bot_name}: {message}")
-        self.bot_manager.process_bot_message(bot_name, message, self.log, self.server_thread.send_to_bots, speak)
+            logging.error(f"Błąd w głównej pętli: {str(e)}", exc_info=True)
+            continue
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_())
+    main()

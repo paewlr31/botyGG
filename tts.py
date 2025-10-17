@@ -5,7 +5,7 @@ from playsound import playsound
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
+#tutaj mp3 
 def speak(text):
     if not text or not text.strip():
         return
