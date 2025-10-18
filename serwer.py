@@ -2,7 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pyngrok import ngrok
 import uvicorn
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
@@ -32,7 +32,7 @@ html = """
         input, button { padding: 8px; font-size: 16px; }
         button { cursor: pointer; }
         button:disabled { cursor: not-allowed; opacity: 0.5; }
-        #userName, #botName, #botCharacter { width: 200px; }
+        #userName, #botName, #botCharacter, #removeBotName { width: 200px; }
     </style>
 </head>
 <body>
@@ -59,7 +59,8 @@ html = """
         </div>
         <div>
             <h4>Usuń bota</h4>
-            <button id="removeBotButton" onclick="removeBot()" disabled>Usuń bota</button>
+            <input id="removeBotName" placeholder="Nazwa bota do usunięcia" />
+            <button id="removeBotButton" onclick="removeBot()">Usuń bota</button>
         </div>
     </div>
 
@@ -68,7 +69,7 @@ html = """
         let userId = localStorage.getItem("userId") || `Użytkownik_${Math.random().toString(36).substr(2, 5)}`;
         localStorage.setItem("userId", userId);
         let userName = "Użytkownik";
-        let hasBot = false;
+        let userBots = [];
 
         function connectWebSocket() {
             console.log("Łączenie WebSocket dla userId:", userId);
@@ -97,9 +98,10 @@ html = """
                         }
                     } else if (data.type === "user_list") {
                         let userList = document.getElementById("userList");
-                        userList.innerHTML = "<strong>Użytkownik:</strong> " + data.user +
-                                             "<br><strong>Bot:</strong> " + (data.bot ? data.bot : "Brak");
-                        hasBot = !!data.bot;
+                        let usersHtml = "<strong>Użytkownicy:</strong> " + (data.users.length ? data.users.join(", ") : "Brak");
+                        let botsHtml = "<strong>Boty:</strong> " + (data.bots.length ? data.bots.map(b => `${b.name} (właściciel: ${b.owner})`).join(", ") : "Brak");
+                        userList.innerHTML = usersHtml + "<br>" + botsHtml;
+                        userBots = data.bots.filter(b => b.owner_id === userId).map(b => b.name);
                         updateButtons();
                     }
                 } catch (e) {
@@ -123,9 +125,8 @@ html = """
         function updateButtons() {
             let addBotButton = document.getElementById("addBotButton");
             let removeBotButton = document.getElementById("removeBotButton");
-            addBotButton.disabled = hasBot;
-            removeBotButton.disabled = !hasBot;
-            console.log("Aktualizacja przycisków: addBot=", !hasBot, "removeBot=", hasBot);
+            removeBotButton.disabled = userBots.length === 0;
+            console.log("Aktualizacja przycisków: addBot=aktywny, removeBot=", userBots.length > 0);
         }
 
         function sendMessage() {
@@ -207,13 +208,20 @@ html = """
         }
 
         function removeBot() {
-            let message = { type: "remove_bot" };
-            console.log("Wysyłanie remove_bot:", message);
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(message));
+            let botName = document.getElementById("removeBotName").value.trim();
+            if (botName) {
+                let message = { type: "remove_bot", name: botName };
+                console.log("Wysyłanie remove_bot:", message);
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify(message));
+                    document.getElementById("removeBotName").value = "";
+                } else {
+                    console.log("WebSocket nie jest otwarty");
+                    alert("Połączenie z serwerem nieaktywne. Spróbuj ponownie.");
+                }
             } else {
-                console.log("WebSocket nie jest otwarty");
-                alert("Połączenie z serwerem nieaktywne. Spróbuj ponownie.");
+                console.log("Brak nazwy bota do usunięcia");
+                alert("Podaj nazwę bota do usunięcia!");
             }
         }
     </script>
@@ -226,10 +234,11 @@ async def get():
     return HTMLResponse(html)
 
 class Bot:
-    def __init__(self, id: str, name: str, character: str):
+    def __init__(self, id: str, name: str, character: str, owner_id: str):
         self.id = id
         self.name = name
         self.system_prompt = f"Jesteś {character}, który odpowiada zwięźle po polsku."
+        self.owner_id = owner_id
 
     async def respond(self, message: str) -> str:
         try:
@@ -250,25 +259,28 @@ class Bot:
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}  # user_id -> WebSocket
-        self.user_name: str = "Użytkownik"  # Tylko jeden użytkownik
-        self.bot: Optional[Bot] = None  # Tylko jeden bot
+        self.users: Dict[str, str] = {}  # user_id -> user_name
+        self.bots: List[Bot] = []  # Lista botów
+        self.last_message_was_bot: bool = False  # Flaga, czy ostatnia wiadomość była od bota
 
     async def connect(self, websocket: WebSocket, user_id: str):
         await websocket.accept()
+        user_name = self.users.get(user_id, f"Użytkownik_{user_id[:5]}")
         self.active_connections[user_id] = websocket
-        logging.info(f"Użytkownik {self.user_name} (ID: {user_id}) dołączył")
-        await self.broadcast({"type": "message", "content": f"👋 {self.user_name} dołączył."})
+        self.users[user_id] = user_name
+        logging.info(f"Użytkownik {user_name} (ID: {user_id}) dołączył")
+        await self.broadcast({"type": "message", "content": f"👋 {user_name} dołączył ({len(self.active_connections)} osób)."})
         await self.update_user_list()
-
-        if self.bot:
-            response = await self.bot.respond(f"Nowy użytkownik {self.user_name} dołączył.")
-            await self.broadcast({"type": "message", "content": f"🤖 {self.bot.name}: {response}"})
 
     def disconnect(self, user_id: str):
         if user_id in self.active_connections:
+            user_name = self.users.get(user_id, user_id)
             del self.active_connections[user_id]
-            logging.info(f"Użytkownik {self.user_name} (ID: {user_id}) odłączony")
-            return self.user_name
+            if user_id in self.users:
+                del self.users[user_id]
+            self.bots = [bot for bot in self.bots if bot.owner_id != user_id]
+            logging.info(f"Użytkownik {user_name} (ID: {user_id}) odłączony, usunięto jego boty")
+            return user_name
         return None
 
     async def broadcast(self, message: dict):
@@ -283,15 +295,19 @@ class ConnectionManager:
     async def update_user_list(self):
         await self.broadcast({
             "type": "user_list",
-            "user": self.user_name,
-            "bot": self.bot.name if self.bot else None
+            "users": list(self.users.values()),
+            "bots": [{"name": bot.name, "owner": self.users.get(bot.owner_id, bot.owner_id), "owner_id": bot.owner_id} for bot in self.bots]
         })
 
-    async def handle_message(self, message: str):
-        await self.broadcast({"type": "message", "content": f"💬 {self.user_name}: {message}"})
-        if self.bot:
-            response = await self.bot.respond(message)
-            await self.broadcast({"type": "message", "content": f"🤖 {self.bot.name}: {response}"})
+    async def handle_message(self, user_id: str, message: str, user_name: str):
+        self.last_message_was_bot = False
+        await self.broadcast({"type": "message", "content": f"💬 {user_name}: {message}"})
+        if not self.last_message_was_bot:
+            for bot in self.bots:
+                if bot.owner_id != user_id:  # Boty nie odpowiadają swojemu właścicielowi
+                    response = await bot.respond(message)
+                    await self.broadcast({"type": "message", "content": f"🤖 {bot.name}: {response}"})
+                    self.last_message_was_bot = True
 
 manager = ConnectionManager()
 
@@ -302,18 +318,19 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         while True:
             data = await websocket.receive_json()
             logging.debug(f"Otrzymano dane WebSocket: {data}")
+            user_name = manager.users.get(user_id, user_id)
             if data["type"] == "message":
-                logging.info(f"Wiadomość od {manager.user_name}: {data['content']}")
-                await manager.handle_message(data["content"])
+                logging.info(f"Wiadomość od {user_name}: {data['content']}")
+                await manager.handle_message(user_id, data["content"], user_name)
             elif data["type"] == "set_user_name":
                 new_name = data.get("content", "").strip()
                 if not new_name:
                     logging.warning("Brak nowej nazwy użytkownika")
                     await manager.broadcast({"type": "message", "content": "⚠️ Podaj nową nazwę użytkownika!"})
                     continue
-                manager.user_name = new_name
-                logging.info(f"Ustawiono nazwę użytkownika: {new_name}")
-                await manager.broadcast({"type": "message", "content": f"👤 Nazwa zmieniona na {new_name}."})
+                manager.users[user_id] = new_name
+                logging.info(f"Ustawiono nazwę użytkownika {user_id}: {new_name}")
+                await manager.broadcast({"type": "message", "content": f"👤 {user_name} zmienił nazwę na {new_name}."})
                 await manager.update_user_list()
             elif data["type"] == "add_bot":
                 bot_name = data.get("name", "").strip()
@@ -322,32 +339,37 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     logging.warning("Brak nazwy lub charakteru bota")
                     await manager.broadcast({"type": "message", "content": "⚠️ Podaj nazwę i charakter bota!"})
                     continue
-                if manager.bot:
-                    logging.warning(f"Bot już istnieje: {manager.bot.name}")
-                    await manager.broadcast({"type": "message", "content": f"⚠️ Bot już istnieje: {manager.bot.name}!"})
+                if any(bot.name.lower() == bot_name.lower() and bot.owner_id == user_id for bot in manager.bots):
+                    logging.warning(f"Bot {bot_name} już istnieje dla użytkownika {user_name}")
+                    await manager.broadcast({"type": "message", "content": f"⚠️ Bot {bot_name} już istnieje!"})
                     continue
                 bot_id = str(uuid.uuid4())
-                manager.bot = Bot(bot_id, bot_name, bot_character)
-                logging.info(f"Dodano bota {bot_name} (charakter: {bot_character}, ID: {bot_id})")
-                await manager.broadcast({"type": "message", "content": f"🤖 Dodano bota {bot_name} jako {bot_character}."})
+                manager.bots.append(Bot(bot_id, bot_name, bot_character, user_id))
+                logging.info(f"Dodano bota {bot_name} (charakter: {bot_character}, ID: {bot_id}, właściciel: {user_name})")
+                await manager.broadcast({"type": "message", "content": f"🤖 {user_name} dodał bota {bot_name} jako {bot_character}."})
                 await manager.update_user_list()
             elif data["type"] == "remove_bot":
-                if not manager.bot:
-                    logging.warning("Brak bota do usunięcia")
-                    await manager.broadcast({"type": "message", "content": "⚠️ Nie ma bota do usunięcia!"})
+                bot_name = data.get("name", "").strip()
+                if not bot_name:
+                    logging.warning("Brak nazwy bota do usunięcia")
+                    await manager.broadcast({"type": "message", "content": "⚠️ Podaj nazwę bota do usunięcia!"})
                     continue
-                bot_name = manager.bot.name
-                manager.bot = None
-                logging.info(f"Usunięto bota {bot_name}")
-                await manager.broadcast({"type": "message", "content": f"🧹 Usunięto bota {bot_name}."})
-                await manager.update_user_list()
+                bots_before = len(manager.bots)
+                manager.bots = [bot for bot in manager.bots if not (bot.name.lower() == bot_name.lower() and bot.owner_id == user_id)]
+                if len(manager.bots) < bots_before:
+                    logging.info(f"Usunięto bota {bot_name} przez {user_name}")
+                    await manager.broadcast({"type": "message", "content": f"🧹 {user_name} usunął bota {bot_name}."})
+                    await manager.update_user_list()
+                else:
+                    logging.warning(f"Nie znaleziono bota {bot_name} dla użytkownika {user_name}")
+                    await manager.broadcast({"type": "message", "content": f"⚠️ Nie znaleziono bota {bot_name}."})
             elif data["type"] == "get_status":
                 await manager.update_user_list()
     except WebSocketDisconnect:
         user_name = manager.disconnect(user_id)
         if user_name:
             logging.info(f"Użytkownik {user_name} odłączony przez WebSocketDisconnect")
-            await manager.broadcast({"type": "message", "content": f"🚪 {user_name} wyszedł."})
+            await manager.broadcast({"type": "message", "content": f"🚪 {user_name} wyszedł ({len(manager.active_connections)} osób)."})
             await manager.update_user_list()
     except Exception as e:
         logging.error(f"Błąd w websocket_endpoint: {str(e)}")
