@@ -168,7 +168,13 @@ html = """
                 msgBox.innerHTML += `<div class="turn-info">${data.content}</div>`;
                 msgBox.scrollTop = msgBox.scrollHeight;
             }
-            await new Promise(resolve => setTimeout(resolve, 2000)); // 2-sekundowa przerwa
+            // Ustal opóźnienie w zależności od typu wiadomości
+            let delay = 2000;
+            if (data.type === "timeout_info" && data.content.includes("Oczekiwanie na wiadomość użytkownika")) {
+                delay = 7000; // 5 sekund oczekiwania + 2 sekundy bufor
+            }
+            await new Promise(resolve => setTimeout(resolve, delay));
+
         }
         isProcessingQueue = false;
     }
