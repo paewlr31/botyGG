@@ -81,175 +81,201 @@ html = """
         </div>
     </div>
 
-    <script>
-        let ws;
-        let userId = localStorage.getItem("userId") || `Użytkownik_${Math.random().toString(36).substr(2, 5)}`;
-        localStorage.setItem("userId", userId);
-        let userName = "Użytkownik";
-        let userBots = [];
+<script>
+    let ws;
+    let userId = localStorage.getItem("userId") || `Użytkownik_${Math.random().toString(36).substr(2, 5)}`;
+    localStorage.setItem("userId", userId);
+    let userName = "Użytkownik";
+    let userBots = [];
+    let messageQueue = []; // Kolejka wiadomości
+    let isProcessingQueue = false; // Flaga przetwarzania kolejki
 
-        function connectWebSocket() {
-            console.log("Łączenie WebSocket dla userId:", userId);
-            ws = new WebSocket(`wss://${location.host}/ws/${userId}`);
-            ws.onopen = () => {
-                console.log("WebSocket połączony");
-                let msgBox = document.getElementById("messages");
-                msgBox.innerHTML += `<div>✅ Połączono z serwerem</div>`;
-                ws.send(JSON.stringify({ type: "get_status" }));
-            };
-            ws.onmessage = (event) => {
-                console.log("Otrzymano wiadomość:", event.data);
-                try {
-                    let data = JSON.parse(event.data);
-                    let msgBox = document.getElementById("messages");
-                    if (data.type === "message") {
-                        msgBox.innerHTML += `<div>${data.content}</div>`;
-                        msgBox.scrollTop = msgBox.scrollHeight;
-                        try {
-                            let utterance = new SpeechSynthesisUtterance(data.content);
-                            utterance.lang = "pl-PL";
-                            window.speechSynthesis.speak(utterance);
-                        } catch (e) {
-                            console.error("Błąd TTS:", e);
-                            msgBox.innerHTML += `<div style="color: red;">⚠️ TTS nieobsługiwane w tej przeglądarce</div>`;
-                        }
-                    } else if (data.type === "user_list") {
-                        let userList = document.getElementById("userList");
-                        let usersHtml = "<strong>Użytkownicy:</strong> " + (data.users.length ? data.users.join(", ") : "Brak");
-                        let botsHtml = "<strong>Boty:</strong> " + (data.bots.length ? data.bots.map(b => `${b.name} (właściciel: ${b.owner})`).join(", ") : "Brak");
-                        userList.innerHTML = usersHtml + "<br>" + botsHtml;
-                        userBots = data.bots.filter(b => b.owner_id === userId).map(b => b.name);
-                        updateButtons();
-                    } else if (data.type === "timeout_info") {
-                        console.log("Otrzymano timeout_info:", data.content);
-                        msgBox.innerHTML += `<div class="timeout-info">${data.content}</div>`;
-                        msgBox.scrollTop = msgBox.scrollHeight;
-                    } else if (data.type === "turn_info") {
-                        console.log("Otrzymano turn_info:", data.content);
-                        msgBox.innerHTML += `<div class="turn-info">${data.content}</div>`;
-                        msgBox.scrollTop = msgBox.scrollHeight;
-                    }
-                } catch (e) {
-                    console.error("Błąd parsowania wiadomości:", e);
-                }
-            };
-            ws.onclose = () => {
-                console.log("WebSocket zamknięty, ponowne łączenie...");
-                let msgBox = document.getElementById("messages");
-                msgBox.innerHTML += `<div style="color: red;">❌ Połączenie zamknięte. Próbuję ponownie...</div>`;
-                setTimeout(connectWebSocket, 2000);
-            };
-            ws.onerror = (error) => {
-                console.error("Błąd WebSocket:", error);
-                let msgBox = document.getElementById("messages");
-                msgBox.innerHTML += `<div style="color: red;">⚠️ Błąd WebSocket: ${error}</div>`;
-            };
-        }
-        connectWebSocket();
-
-        function updateButtons() {
-            let addBotButton = document.getElementById("addBotButton");
-            let removeBotButton = document.getElementById("removeBotButton");
-            removeBotButton.disabled = userBots.length === 0;
-            console.log("Aktualizacja przycisków: addBot=aktywny, removeBot=", userBots.length > 0);
-        }
-
-        function sendMessage() {
-            let input = document.getElementById("messageText");
-            if (input.value.trim()) {
-                let message = { type: "message", content: input.value, user: userName };
-                console.log("Wysyłanie wiadomości:", message);
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify(message));
-                    input.value = "";
-                } else {
-                    console.log("WebSocket nie jest otwarty");
-                    alert("Połączenie z serwerem nieaktywne. Spróbuj ponownie.");
-                }
-            }
-        }
-
-        function startSpeechRecognition() {
+    function connectWebSocket() {
+        console.log("Łączenie WebSocket dla userId:", userId);
+        ws = new WebSocket(`wss://${location.host}/ws/${userId}`);
+        ws.onopen = () => {
+            console.log("WebSocket połączony");
+            queueMessage({ type: "message", content: "✅ Połączono z serwerem" });
+            ws.send(JSON.stringify({ type: "get_status" }));
+        };
+        ws.onmessage = (event) => {
+            console.log("Otrzymano wiadomość:", event.data);
             try {
-                let recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-                recognition.lang = "pl-PL";
-                recognition.onresult = (event) => {
-                    let transcript = event.results[0][0].transcript;
-                    console.log("Rozpoznano mowę:", transcript);
-                    document.getElementById("messageText").value = transcript;
-                    sendMessage();
-                };
-                recognition.onerror = (event) => {
-                    console.error("Błąd STT:", event.error);
-                    let msgBox = document.getElementById("messages");
-                    msgBox.innerHTML += `<div style="color: red;">⚠️ Błąd rozpoznawania mowy: ${event.error}</div>`;
-                };
-                recognition.start();
+                let data = JSON.parse(event.data);
+                queueMessage(data); // Dodaj wiadomość do kolejki
             } catch (e) {
-                console.error("Błąd STT:", e);
-                let msgBox = document.getElementById("messages");
-                msgBox.innerHTML += `<div style="color: red;">⚠️ Rozpoznawanie mowy nieobsługiwane w tej przeglądarce</div>`;
+                console.error("Błąd parsowania wiadomości:", e);
             }
-        }
+        };
+        ws.onclose = () => {
+            console.log("WebSocket zamknięty, ponowne łączenie...");
+            queueMessage({ type: "message", content: "❌ Połączenie zamknięte. Próbuję ponownie..." });
+            setTimeout(connectWebSocket, 2000);
+        };
+        ws.onerror = (error) => {
+            console.error("Błąd WebSocket:", error);
+            queueMessage({ type: "message", content: `⚠️ Błąd WebSocket: ${error}` });
+        };
+    }
 
-        function setUserName() {
-            let newName = document.getElementById("userName").value.trim();
-            if (newName) {
-                userName = newName;
-                document.getElementById("currentUserName").innerHTML = userName;
-                document.getElementById("userName").value = "";
-                let message = { type: "set_user_name", content: userName };
-                console.log("Wysyłanie set_user_name:", message);
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify(message));
-                } else {
-                    console.log("WebSocket nie jest otwarty");
-                    alert("Połączenie z serwerem nieaktywne. Spróbuj ponownie.");
-                }
-            } else {
-                console.log("Brak nowej nazwy użytkownika");
-                alert("Podaj nową nazwę użytkownika!");
-            }
-        }
+    // Funkcja do dodawania wiadomości do kolejki
+    function queueMessage(data) {
+        messageQueue.push(data);
+        processQueue();
+    }
 
-        function addBot() {
-            let botName = document.getElementById("botName").value.trim();
-            let botCharacter = document.getElementById("botCharacter").value.trim();
-            if (botName && botCharacter) {
-                let message = { type: "add_bot", name: botName, character: botCharacter };
-                console.log("Wysyłanie add_bot:", message);
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify(message));
-                    document.getElementById("botName").value = "";
-                    document.getElementById("botCharacter").value = "";
+    // Funkcja do przetwarzania kolejki wiadomości
+    async function processQueue() {
+        if (isProcessingQueue || messageQueue.length === 0) return;
+        isProcessingQueue = true;
+        while (messageQueue.length > 0) {
+            let data = messageQueue.shift();
+            let msgBox = document.getElementById("messages");
+            if (data.type === "message") {
+                msgBox.innerHTML += `<div>${data.content}</div>`;
+                msgBox.scrollTop = msgBox.scrollHeight;
+                // Odczytuj TTS tylko dla wiadomości botów (zaczynających się od 🤖)
+                if (data.content.startsWith("🤖")) {
+                    try {
+                        // Wyodrębnij treść po "🤖 <nazwa>: "
+                        let botResponse = data.content.replace(/^🤖\s+[^:]+:\s*/, "");
+                        let utterance = new SpeechSynthesisUtterance(botResponse);
+                        utterance.lang = "pl-PL";
+                        await new Promise(resolve => {
+                            utterance.onend = resolve;
+                            window.speechSynthesis.speak(utterance);
+                        });
+                    } catch (e) {
+                        console.error("Błąd TTS:", e);
+                        msgBox.innerHTML += `<div style="color: red;">⚠️ TTS nieobsługiwane w tej przeglądarce</div>`;
+                    }
                 } else {
-                    console.log("WebSocket nie jest otwarty");
-                    alert("Połączenie z serwerem nieaktywne. Spróbuj ponownie.");
+                    console.log(`Pomijanie TTS dla wiadomości: ${data.content}`);
                 }
-            } else {
-                console.log("Brak nazwy lub charakteru bota");
-                alert("Podaj nazwę i charakter bota!");
+            } else if (data.type === "user_list") {
+                let userList = document.getElementById("userList");
+                let usersHtml = "<strong>Użytkownicy:</strong> " + (data.users.length ? data.users.join(", ") : "Brak");
+                let botsHtml = "<strong>Boty:</strong> " + (data.bots.length ? data.bots.map(b => `${b.name} (właściciel: ${b.owner})`).join(", ") : "Brak");
+                userList.innerHTML = usersHtml + "<br>" + botsHtml;
+                userBots = data.bots.filter(b => b.owner_id === userId).map(b => b.name);
+                updateButtons();
+            } else if (data.type === "timeout_info") {
+                console.log("Otrzymano timeout_info:", data.content);
+                msgBox.innerHTML += `<div class="timeout-info">${data.content}</div>`;
+                msgBox.scrollTop = msgBox.scrollHeight;
+            } else if (data.type === "turn_info") {
+                console.log("Otrzymano turn_info:", data.content);
+                msgBox.innerHTML += `<div class="turn-info">${data.content}</div>`;
+                msgBox.scrollTop = msgBox.scrollHeight;
             }
+            await new Promise(resolve => setTimeout(resolve, 2000)); // 2-sekundowa przerwa
         }
+        isProcessingQueue = false;
+    }
 
-        function removeBot() {
-            let botName = document.getElementById("removeBotName").value.trim();
-            if (botName) {
-                let message = { type: "remove_bot", name: botName };
-                console.log("Wysyłanie remove_bot:", message);
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify(message));
-                    document.getElementById("removeBotName").value = "";
-                } else {
-                    console.log("WebSocket nie jest otwarty");
-                    alert("Połączenie z serwerem nieaktywne. Spróbuj ponownie.");
-                }
+    function updateButtons() {
+        let addBotButton = document.getElementById("addBotButton");
+        let removeBotButton = document.getElementById("removeBotButton");
+        removeBotButton.disabled = userBots.length === 0;
+        console.log("Aktualizacja przycisków: addBot=aktywny, removeBot=", userBots.length > 0);
+    }
+
+    function sendMessage() {
+        let input = document.getElementById("messageText");
+        if (input.value.trim()) {
+            let message = { type: "message", content: input.value, user: userName };
+            console.log("Wysyłanie wiadomości:", message);
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(message));
+                input.value = "";
             } else {
-                console.log("Brak nazwy bota do usunięcia");
-                alert("Podaj nazwę bota do usunięcia!");
+                console.log("WebSocket nie jest otwarty");
+                queueMessage({ type: "message", content: "⚠️ Połączenie z serwerem nieaktywne. Spróbuj ponownie." });
             }
         }
-    </script>
+    }
+
+    function startSpeechRecognition() {
+        try {
+            let recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.lang = "pl-PL";
+            recognition.onresult = (event) => {
+                let transcript = event.results[0][0].transcript;
+                console.log("Rozpoznano mowę:", transcript);
+                document.getElementById("messageText").value = transcript;
+                sendMessage();
+            };
+            recognition.onerror = (event) => {
+                console.error("Błąd STT:", event.error);
+                queueMessage({ type: "message", content: `⚠️ Błąd rozpoznawania mowy: ${event.error}` });
+            };
+            recognition.start();
+        } catch (e) {
+            console.error("Błąd STT:", e);
+            queueMessage({ type: "message", content: "⚠️ Rozpoznawanie mowy nieobsługiwane w tej przeglądarce" });
+        }
+    }
+
+    function setUserName() {
+        let newName = document.getElementById("userName").value.trim();
+        if (newName) {
+            userName = newName;
+            document.getElementById("currentUserName").innerHTML = userName;
+            document.getElementById("userName").value = "";
+            let message = { type: "set_user_name", content: userName };
+            console.log("Wysyłanie set_user_name:", message);
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(message));
+            } else {
+                console.log("WebSocket nie jest otwarty");
+                queueMessage({ type: "message", content: "⚠️ Połączenie z serwerem nieaktywne. Spróbuj ponownie." });
+            }
+        } else {
+            console.log("Brak nowej nazwy użytkownika");
+            queueMessage({ type: "message", content: "⚠️ Podaj nową nazwę użytkownika!" });
+        }
+    }
+
+    function addBot() {
+        let botName = document.getElementById("botName").value.trim();
+        let botCharacter = document.getElementById("botCharacter").value.trim();
+        if (botName && botCharacter) {
+            let message = { type: "add_bot", name: botName, character: botCharacter };
+            console.log("Wysyłanie add_bot:", message);
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(message));
+                document.getElementById("botName").value = "";
+                document.getElementById("botCharacter").value = "";
+            } else {
+                console.log("WebSocket nie jest otwarty");
+                queueMessage({ type: "message", content: "⚠️ Połączenie z serwerem nieaktywne. Spróbuj ponownie." });
+            }
+        } else {
+            console.log("Brak nazwy lub charakteru bota");
+            queueMessage({ type: "message", content: "⚠️ Podaj nazwę i charakter bota!" });
+        }
+    }
+
+    function removeBot() {
+        let botName = document.getElementById("removeBotName").value.trim();
+        if (botName) {
+            let message = { type: "remove_bot", name: botName };
+            console.log("Wysyłanie remove_bot:", message);
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(message));
+                document.getElementById("removeBotName").value = "";
+            } else {
+                console.log("WebSocket nie jest otwarty");
+                queueMessage({ type: "message", content: "⚠️ Połączenie z serwerem nieaktywne. Spróbuj ponownie." });
+            }
+        } else {
+            console.log("Brak nazwy bota do usunięcia");
+            queueMessage({ type: "message", content: "⚠️ Podaj nazwę bota do usunięcia!" });
+        }
+    }
+
+    connectWebSocket();
+</script>
 </body>
 </html>
 """
@@ -335,20 +361,22 @@ class ConnectionManager:
         any_bot_responded = False
         for bot in self.bots:
             logging.debug(f"Sprawdzanie bota {bot.name} (owner_id: {bot.owner_id}, user_id: {user_id})")
-            response = await bot.respond(message)  # Boty odpowiadają wszystkim
+            response = await bot.respond(message)
             await self.broadcast({"type": "message", "content": f"🤖 {bot.name}: {response}"})
             any_bot_responded = True
+            await asyncio.sleep(2)  # 2-sekundowa przerwa między odpowiedziami botów
         if any_bot_responded:
             self.last_message_was_bot = True
             await self.broadcast({"type": "timeout_info", "content": f"⏳ Oczekiwanie na wiadomość użytkownika ({self.timeout_seconds} sekund)"})
-            await self.broadcast({"type": "turn_info", "content": "🗣️ Twoja kolej na mówienie!"})
+            await asyncio.sleep(2)  # Przerwa przed timeoutem
             await asyncio.sleep(self.timeout_seconds)
             if self.last_message_was_bot:  # Sprawdź, czy nie było nowej wiadomości
                 self.last_message_was_bot = False
-                logging.info("Timeout zresetowany, boty mogą odpowiadać")
                 await self.broadcast({"type": "timeout_info", "content": "⏳ Timeout minął, boty mogą odpowiadać."})
+                await asyncio.sleep(2)  # Przerwa przed komunikatem o kolejce
                 await self.broadcast({"type": "turn_info", "content": "🗣️ Twoja kolej na mówienie!"})
         else:
+            await asyncio.sleep(2)  # Przerwa przed komunikatem o kolejce
             await self.broadcast({"type": "turn_info", "content": "🗣️ Twoja kolej na mówienie!"})
 
 manager = ConnectionManager()
@@ -388,7 +416,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 bot_id = str(uuid.uuid4())
                 manager.bots.append(Bot(bot_id, bot_name, bot_character, user_id))
                 logging.info(f"Dodano bota {bot_name} (charakter: {bot_character}, ID: {bot_id}, właściciel: {user_name})")
-                await manager.broadcast({"type": "message", "content": f"🤖 {user_name} dodał bota {bot_name} jako {bot_character}."})
+                await manager.broadcast({"type": "message", "content": f" 🟢{user_name} dodał bota {bot_name} jako {bot_character}."})
                 await manager.broadcast({"type": "turn_info", "content": "🗣️ Twoja kolej na mówienie!"})
                 await manager.update_user_list()
             elif data["type"] == "remove_bot":
@@ -422,3 +450,14 @@ if __name__ == "__main__":
     public_url = ngrok.connect(8000)
     logging.info(f"Publiczny link: {public_url}")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    """
+    TODO:
+    dobra chce tutaj mieć pomiedzy akcjami dwie sekundy przerwy: 
+    forntend ma wspolgrac: masz fronten i abckend: jajakolwiek akcja
+      to 2 sekundy przerwy, ma sie wtedy nic nie dizac, mozesz
+        przechowywac wypeoiwdxi boty gdzie sna zewnatrz czy cos, 
+        jak jeden bot mowi to tylko on mowi i koniec jak ja to ja 
+    (tyczy sir to za rowni mowienia z glsocinka jak i wypisywania 
+    na ekranie), jedna rzecz na raz
+    """
