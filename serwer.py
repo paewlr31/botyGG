@@ -285,37 +285,34 @@ class Bot:
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}
-        self.users: Dict[str, str] = {}
-        self.bots: List[Bot] = []
-        self.last_message: Optional[str] = None
-        self.last_speaker: Optional[str] = None
-        self.user_timeout_seconds: int = 5
-        self.bot_pause_seconds: int = 2
-        self.user_silence_count: int = 0
-        self.conversation_active: bool = False
+        self.active_connections: Dict[str, WebSocket] = {}  # user_id -> WebSocket
+        self.users: Dict[str, str] = {}  # user_id -> user_name
+        self.bots: List[Bot] = []  # Lista botów
+        self.last_message_was_bot: bool = False  # Flaga, czy ostatnia wiadomość była od bota
+        self.timeout_seconds: int = 5  # Timeout w sekundach
 
     async def connect(self, websocket: WebSocket, user_id: str):
         await websocket.accept()
         user_name = self.users.get(user_id, f"Użytkownik_{user_id[:5]}")
         self.active_connections[user_id] = websocket
         self.users[user_id] = user_name
-        logging.info(f"Użytkownik {user_name} dołączył")
+        logging.info(f"Użytkownik {user_name} (ID: {user_id}) dołączył")
         await self.broadcast({"type": "message", "content": f"👋 {user_name} dołączył ({len(self.active_connections)} osób)."})
         await self.update_user_list()
 
     def disconnect(self, user_id: str):
         if user_id in self.active_connections:
-            user_name = self.users.get(user_id, f"Użytkownik_{user_id[:5]}")
+            user_name = self.users.get(user_id, user_id)
             del self.active_connections[user_id]
-            del self.users[user_id]
-            # usuń boty tego użytkownika
+            if user_id in self.users:
+                del self.users[user_id]
             self.bots = [bot for bot in self.bots if bot.owner_id != user_id]
-            logging.info(f"Użytkownik {user_name} wyszedł — jego boty usunięte.")
+            logging.info(f"Użytkownik {user_name} (ID: {user_id}) odłączony, usunięto jego boty")
             return user_name
         return None
 
     async def broadcast(self, message: dict):
+        logging.debug(f"Broadcast wiadomości: {message}")
         for user_id, conn in list(self.active_connections.items()):
             try:
                 await conn.send_json(message)
@@ -327,60 +324,33 @@ class ConnectionManager:
         await self.broadcast({
             "type": "user_list",
             "users": list(self.users.values()),
-            "bots": [{"name": b.name, "owner": self.users.get(b.owner_id, b.owner_id)} for b in self.bots]
+            "bots": [{"name": bot.name, "owner": self.users.get(bot.owner_id, bot.owner_id), "owner_id": bot.owner_id} for bot in self.bots]
         })
 
     async def handle_message(self, user_id: str, message: str, user_name: str):
-        """Obsługa wypowiedzi użytkownika — resetuje licznik ciszy i uruchamia kolejkę botów."""
-        self.last_message = message
-        self.last_speaker = user_name
-        self.user_silence_count = 0
-        self.conversation_active = True
-
-        await self.broadcast({"type": "message", "content": f"{user_name}: {message}"})
-        await asyncio.sleep(self.bot_pause_seconds)  # chwila ciszy po wypowiedzi użytkownika
-
-        await self.start_bot_turn()
-
-    async def start_bot_turn(self):
-        """Boty mówią po kolei, jeden po drugim, z przerwami."""
-        if not self.bots:
-            await self.broadcast({"type": "turn_info", "content": "Brak botów w rozmowie."})
-            return
-
-        self.last_speaker = "bot"
+        logging.debug(f"Obsługa wiadomości od {user_name} (ID: {user_id}): {message}")
+        self.last_message_was_bot = False
+        await self.broadcast({"type": "message", "content": f"💬 {user_name}: {message}"})
+        logging.debug(f"Liczba botów: {len(self.bots)}")
+        any_bot_responded = False
         for bot in self.bots:
-            response = await bot.respond(self.last_message)
-            await self.broadcast({"type": "message", "content": f"{bot.name}: {response}"})
-            self.last_message = response
-            await asyncio.sleep(self.bot_pause_seconds)  # przerwa po wypowiedzi bota
+            logging.debug(f"Sprawdzanie bota {bot.name} (owner_id: {bot.owner_id}, user_id: {user_id})")
+            response = await bot.respond(message)  # Boty odpowiadają wszystkim
+            await self.broadcast({"type": "message", "content": f"🤖 {bot.name}: {response}"})
+            any_bot_responded = True
+        if any_bot_responded:
+            self.last_message_was_bot = True
+            await self.broadcast({"type": "timeout_info", "content": f"⏳ Oczekiwanie na wiadomość użytkownika ({self.timeout_seconds} sekund)"})
+            await self.broadcast({"type": "turn_info", "content": "🗣️ Twoja kolej na mówienie!"})
+            await asyncio.sleep(self.timeout_seconds)
+            if self.last_message_was_bot:  # Sprawdź, czy nie było nowej wiadomości
+                self.last_message_was_bot = False
+                logging.info("Timeout zresetowany, boty mogą odpowiadać")
+                await self.broadcast({"type": "timeout_info", "content": "⏳ Timeout minął, boty mogą odpowiadać."})
+                await self.broadcast({"type": "turn_info", "content": "🗣️ Twoja kolej na mówienie!"})
+        else:
+            await self.broadcast({"type": "turn_info", "content": "🗣️ Twoja kolej na mówienie!"})
 
-        await self.wait_for_user_turn()
-
-    async def wait_for_user_turn(self):
-        """Oczekiwanie na reakcję człowieka po turze botów."""
-        self.last_speaker = "bot"
-        await self.broadcast({
-            "type": "timeout_info",
-            "content": f"Czekam na odpowiedź użytkownika (limit: {self.user_timeout_seconds} sek.)"
-        })
-
-        try:
-            await asyncio.wait_for(self.wait_for_user_message(), timeout=self.user_timeout_seconds)
-        except asyncio.TimeoutError:
-            self.user_silence_count += 1
-            logging.info(f"Brak odpowiedzi użytkownika. Cisza #{self.user_silence_count}")
-            await self.broadcast({
-                "type": "timeout_info",
-                "content": f"Użytkownik milczy... ({self.user_silence_count})"
-            })
-            # po ciszy — kontynuuj rozmowę botów
-            await self.start_bot_turn()
-
-    async def wait_for_user_message(self):
-        """Pomocnicze — wstrzymuje się, dopóki nie pojawi się nowa wiadomość użytkownika."""
-        while self.last_speaker == "bot":
-            await asyncio.sleep(0.5)
 manager = ConnectionManager()
 
 @app.websocket("/ws/{user_id}")
@@ -398,52 +368,52 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 new_name = data.get("content", "").strip()
                 if not new_name:
                     logging.warning("Brak nowej nazwy użytkownika")
-                    await manager.broadcast({"type": "message", "content": " Podaj nową nazwę użytkownika!"})
+                    await manager.broadcast({"type": "message", "content": "⚠️ Podaj nową nazwę użytkownika!"})
                     continue
                 manager.users[user_id] = new_name
                 logging.info(f"Ustawiono nazwę użytkownika {user_id}: {new_name}")
-                await manager.broadcast({"type": "message", "content": f" {user_name} zmienił nazwę na {new_name}."})
+                await manager.broadcast({"type": "message", "content": f"👤 {user_name} zmienił nazwę na {new_name}."})
                 await manager.update_user_list()
             elif data["type"] == "add_bot":
                 bot_name = data.get("name", "").strip()
                 bot_character = data.get("character", "").strip()
                 if not bot_name or not bot_character:
                     logging.warning("Brak nazwy lub charakteru bota")
-                    await manager.broadcast({"type": "message", "content": " Podaj nazwę i charakter bota!"})
+                    await manager.broadcast({"type": "message", "content": "⚠️ Podaj nazwę i charakter bota!"})
                     continue
                 if any(bot.name.lower() == bot_name.lower() and bot.owner_id == user_id for bot in manager.bots):
                     logging.warning(f"Bot {bot_name} już istnieje dla użytkownika {user_name}")
-                    await manager.broadcast({"type": "message", "content": f" Bot {bot_name} już istnieje!"})
+                    await manager.broadcast({"type": "message", "content": f"⚠️ Bot {bot_name} już istnieje!"})
                     continue
                 bot_id = str(uuid.uuid4())
                 manager.bots.append(Bot(bot_id, bot_name, bot_character, user_id))
                 logging.info(f"Dodano bota {bot_name} (charakter: {bot_character}, ID: {bot_id}, właściciel: {user_name})")
-                await manager.broadcast({"type": "message", "content": f" {user_name} dodał bota {bot_name} jako {bot_character}."})
-                await manager.broadcast({"type": "turn_info", "content": " Twoja kolej na mówienie!"})
+                await manager.broadcast({"type": "message", "content": f"🤖 {user_name} dodał bota {bot_name} jako {bot_character}."})
+                await manager.broadcast({"type": "turn_info", "content": "🗣️ Twoja kolej na mówienie!"})
                 await manager.update_user_list()
             elif data["type"] == "remove_bot":
                 bot_name = data.get("name", "").strip()
                 if not bot_name:
                     logging.warning("Brak nazwy bota do usunięcia")
-                    await manager.broadcast({"type": "message", "content": " Podaj nazwę bota do usunięcia!"})
+                    await manager.broadcast({"type": "message", "content": "⚠️ Podaj nazwę bota do usunięcia!"})
                     continue
                 bots_before = len(manager.bots)
                 manager.bots = [bot for bot in manager.bots if not (bot.name.lower() == bot_name.lower() and bot.owner_id == user_id)]
                 if len(manager.bots) < bots_before:
                     logging.info(f"Usunięto bota {bot_name} przez {user_name}")
-                    await manager.broadcast({"type": "message", "content": f" {user_name} usunął bota {bot_name}."})
-                    await manager.broadcast({"type": "turn_info", "content": " Twoja kolej na mówienie!"})
+                    await manager.broadcast({"type": "message", "content": f"🧹 {user_name} usunął bota {bot_name}."})
+                    await manager.broadcast({"type": "turn_info", "content": "🗣️ Twoja kolej na mówienie!"})
                     await manager.update_user_list()
                 else:
                     logging.warning(f"Nie znaleziono bota {bot_name} dla użytkownika {user_name}")
-                    await manager.broadcast({"type": "message", "content": f" Nie znaleziono bota {bot_name}."})
+                    await manager.broadcast({"type": "message", "content": f"⚠️ Nie znaleziono bota {bot_name}."})
             elif data["type"] == "get_status":
                 await manager.update_user_list()
     except WebSocketDisconnect:
         user_name = manager.disconnect(user_id)
         if user_name:
             logging.info(f"Użytkownik {user_name} odłączony przez WebSocketDisconnect")
-            await manager.broadcast({"type": "message", "content": f" {user_name} wyszedł ({len(manager.active_connections)} osób)."})
+            await manager.broadcast({"type": "message", "content": f"🚪 {user_name} wyszedł ({len(manager.active_connections)} osób)."})
             await manager.update_user_list()
     except Exception as e:
         logging.error(f"Błąd w websocket_endpoint: {str(e)}")
@@ -452,11 +422,3 @@ if __name__ == "__main__":
     public_url = ngrok.connect(8000)
     logging.info(f"Publiczny link: {public_url}")
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-"""
-TODO:
-   Do kazdej akcji chce dodac dwie skeundy ciszy: 
-   jedna akcja+ dwie skeundy ciszy i do puki te 
-   dwie skeundy si eni skoncza o zadan nowa si 
-   enie zaczyna
-"""
