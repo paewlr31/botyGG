@@ -309,30 +309,32 @@ class MainThread(QThread):
                         send_via_ggwave(bot_response, self.instance_id)
                         # Przełącz role
                         requests.post(f"{self.server_url}/switch_roles", json={"instance_id": self.instance_id})
-                    elif role == "receiver":
-                        result_queue = Queue()
-                        stop_event = threading.Event()
-                        receive_thread = threading.Thread(
-                            target=receive_via_ggwave,
-                            args=(result_queue, stop_event, self.bot.name, self.instance_id, 15.0)
-                        )
-                        receive_thread.start()
-                        time.sleep(15.0)
-                        stop_event.set()
-                        receive_thread.join()
-                        while not result_queue.empty():
-                            _, decoded = result_queue.get()
-                            if decoded:
-                                try:
-                                    sender_id, message = decoded.split(":", 1)
-                                    self.log_signal.emit(f"📡 {self.bot.name} (GGWave odebrane od {sender_id}): {message}")
-                                    self.last_input = message
-                                    bot_response = get_response(message, self.bot.system_prompt)
-                                    self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
-                                    speak(f"{self.bot.name} mówi: {bot_response}")
-                                    self.last_input = bot_response
-                                except ValueError:
-                                    logger.warning(f"Nieprawidłowy format wiadomości GGWave: {decoded}")
+                    # W sekcji pętli głównej, gdzie obsługiwane jest GGWave
+                elif role == "receiver":
+                    result_queue = Queue()
+                    stop_event = threading.Event()
+                    receive_thread = threading.Thread(
+                        target=receive_via_ggwave,
+                        args=(result_queue, stop_event, self.bot.name, self.instance_id, 15.0)
+                    )
+                    receive_thread.start()
+                    time.sleep(15.0)
+                    stop_event.set()
+                    receive_thread.join()
+                    while not result_queue.empty():
+                        _, decoded = result_queue.get()
+                        if decoded:
+                            try:
+                                sender_id, message = decoded.split(":", 1)
+                                self.log_signal.emit(f"📡 {self.bot.name} (GGWave odebrane od {sender_id}): {message}")
+                                self.last_input = message
+                                bot_response = get_response(message, self.bot.system_prompt)
+                                self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
+                                # Wysyłaj odpowiedź przez GGWave, skoro wiadomość przyszła przez GGWave
+                                send_via_ggwave(bot_response, self.instance_id)
+                                self.last_input = bot_response
+                            except ValueError:
+                                logger.warning(f"Nieprawidłowy format wiadomości GGWave: {decoded}")
             except Exception as e:
                 self.log_signal.emit(f"Błąd w głównej pętli: {str(e)}")
                 continue
