@@ -21,8 +21,6 @@ from queue import Queue
 from openai import OpenAI
 from dotenv import load_dotenv
 import requests
-from flask import Flask, request, jsonify
-from pyngrok import ngrok
 import json
 
 # Konfiguracja logowania
@@ -41,67 +39,11 @@ except Exception as e:
     logger.error(f"❌ Błąd inicjalizacji GGWave: {e}")
     ggwave_instance = None
 
-# Serwer Flask dla synchronizacji
-app_flask = Flask(__name__)
-server_state = {
-    "instances": {},  # {instance_id: {"role": "sender"/"receiver", "bot_name": str, "last_active": float}}
-    "current_sender": None
-}
-
-@app_flask.route("/register", methods=["POST"])
-def register_instance():
-    data = request.json
-    instance_id = data["instance_id"]
-    bot_name = data["bot_name"]
-    server_state["instances"][instance_id] = {
-        "role": "receiver",
-        "bot_name": bot_name,
-        "last_active": time.time()
-    }
-    if not server_state["current_sender"]:
-        server_state["current_sender"] = instance_id
-        server_state["instances"][instance_id]["role"] = "sender"
-    # Czyszczenie nieaktywnych instancji
-    for iid in list(server_state["instances"].keys()):
-        if time.time() - server_state["instances"][iid]["last_active"] > 60:
-            del server_state["instances"][iid]
-            if server_state["current_sender"] == iid:
-                server_state["current_sender"] = None
-    return jsonify({"status": "registered", "role": server_state["instances"][instance_id]["role"]})
-
-@app_flask.route("/get_role", methods=["POST"])
-def get_role():
-    data = request.json
-    instance_id = data["instance_id"]
-    if instance_id in server_state["instances"]:
-        server_state["instances"][instance_id]["last_active"] = time.time()
-        return jsonify({"role": server_state["instances"][instance_id]["role"]})
-    return jsonify({"error": "instance not found"}), 404
-
-@app_flask.route("/switch_roles", methods=["POST"])
-def switch_roles():
-    data = request.json
-    instance_id = data["instance_id"]
-    if instance_id == server_state["current_sender"]:
-        active_instances = [
-            iid for iid, info in server_state["instances"].items()
-            if info["last_active"] > time.time() - 30 and iid != instance_id
-        ]
-        if active_instances:
-            server_state["current_sender"] = random.choice(active_instances)
-            server_state["instances"][server_state["current_sender"]]["role"] = "sender"
-            server_state["instances"][instance_id]["role"] = "receiver"
-            logger.info(f"🔄 Przełączono nadawcę na {server_state['current_sender']}")
-        else:
-            server_state["current_sender"] = None
-            server_state["instances"][instance_id]["role"] = "receiver"
-    return jsonify({"status": "roles updated"})
-
-def start_flask_server():
-    public_url = ngrok.connect(5000).public_url
-    logger.info(f"🌐 Serwer Flask dostępny pod: {public_url}")
-    threading.Thread(target=app_flask.run, kwargs={"host": "0.0.0.0", "port": 5000}, daemon=True).start()
-    return public_url
+# Action types
+ACTION_HUMAN_SPEAK = "human_speak"
+ACTION_BOT_SPEAK = "bot_speak"
+ACTION_GGWAVE_SEND = "ggwave_send"
+ACTION_GGWAVE_RECEIVE = "ggwave_receive"
 
 # Funkcje GGWave
 def send_via_ggwave(message: str, instance_id: str, protocolId: int = 1, volume: int = 80):
@@ -141,7 +83,7 @@ def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str,
             return
         try:
             audio_level = np.max(np.abs(indata))
-            if audio_level > 0.01:  # Zwiększona czułość dla komunikacji między komputerami
+            if audio_level > 0.01:
                 last_data_time = time.time()
                 logger.debug(f"[{bot_name}] Poziom audio: {audio_level:.6f}")
             data_bytes = indata.tobytes()
@@ -170,7 +112,7 @@ def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str,
             channels=1,
             samplerate=48000,
             dtype='float32',
-            blocksize=2048,  # Większy blocksize dla lepszej detekcji
+            blocksize=2048,
             latency='low',
             device=sd.default.device[0]
         ) as stream:
@@ -252,6 +194,7 @@ class Bot:
 # Wątek główny aplikacji
 class MainThread(QThread):
     log_signal = pyqtSignal(str)
+    
     def __init__(self, bot_name, bot_type, server_url, instance_id):
         super().__init__()
         self.running = False
@@ -260,28 +203,31 @@ class MainThread(QThread):
         self.instance_id = instance_id
         self.last_input = None
         self.silence_counter = 0
-        # Rejestracja instancji na serwerze
+        # Register instance with the server
         try:
             response = requests.post(
                 f"{self.server_url}/register",
                 json={"instance_id": self.instance_id, "bot_name": bot_name}
             ).json()
-            logger.info(f"📝 Rejestracja instancji: {response}")
+            logger.info(f"📝 Instance registration: {response}")
         except Exception as e:
-            logger.error(f"Błąd rejestracji na serwerze: {e}")
+            logger.error(f"Registration error: {e}")
+
     def run(self):
         self.running = True
         self.log_signal.emit(f"🤖 Witaj! Jestem {self.bot.name}. Rozpoczynamy rozmowę. Powiedz 'do widzenia', aby zakończyć.")
+        
         while self.running:
             try:
-                # Sprawdź rolę instancji
-                response = requests.post(
+                # Check role for GGWave communication
+                role_response = requests.post(
                     f"{self.server_url}/get_role",
                     json={"instance_id": self.instance_id}
                 ).json()
-                role = response.get("role", "receiver")
-                logger.debug(f"[{self.bot.name}] Rola: {role}")
-                # Słuchaj człowieka
+                role = role_response.get("role", "receiver")
+                logger.debug(f"[{self.bot.name}] Role: {role}")
+
+                # Try listening for human input
                 user_input = listen()
                 if user_input:
                     self.silence_counter = 0
@@ -293,51 +239,53 @@ class MainThread(QThread):
                         speak(response)
                         self.running = False
                         break
-                    # Odpowiedz na ludzkie wejście przez TTS
+                    # Respond to human input
                     bot_response = get_response(user_input, self.bot.system_prompt)
                     self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
                     speak(f"{self.bot.name} mówi: {bot_response}")
                     self.last_input = bot_response
                 else:
                     self.silence_counter += 1
-                # Komunikacja GGWave, jeśli człowiek milczy
+
+                # GGWave communication if no human input for a while
                 if self.silence_counter >= 2:
                     if role == "sender":
                         context = self.last_input if self.last_input else "Cześć, co słychać?"
                         bot_response = get_response(context, self.bot.system_prompt)
                         self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
                         send_via_ggwave(bot_response, self.instance_id)
-                        # Przełącz role
+                        # Request role switch
                         requests.post(f"{self.server_url}/switch_roles", json={"instance_id": self.instance_id})
-                    # W sekcji pętli głównej, gdzie obsługiwane jest GGWave
-                elif role == "receiver":
-                    result_queue = Queue()
-                    stop_event = threading.Event()
-                    receive_thread = threading.Thread(
-                        target=receive_via_ggwave,
-                        args=(result_queue, stop_event, self.bot.name, self.instance_id, 15.0)
-                    )
-                    receive_thread.start()
-                    time.sleep(15.0)
-                    stop_event.set()
-                    receive_thread.join()
-                    while not result_queue.empty():
-                        _, decoded = result_queue.get()
-                        if decoded:
-                            try:
-                                sender_id, message = decoded.split(":", 1)
-                                self.log_signal.emit(f"📡 {self.bot.name} (GGWave odebrane od {sender_id}): {message}")
-                                self.last_input = message
-                                bot_response = get_response(message, self.bot.system_prompt)
-                                self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
-                                # Wysyłaj odpowiedź przez GGWave, skoro wiadomość przyszła przez GGWave
-                                send_via_ggwave(bot_response, self.instance_id)
-                                self.last_input = bot_response
-                            except ValueError:
-                                logger.warning(f"Nieprawidłowy format wiadomości GGWave: {decoded}")
+                    else:
+                        result_queue = Queue()
+                        stop_event = threading.Event()
+                        receive_thread = threading.Thread(
+                            target=receive_via_ggwave,
+                            args=(result_queue, stop_event, self.bot.name, self.instance_id, 15.0)
+                        )
+                        receive_thread.start()
+                        time.sleep(15.0)
+                        stop_event.set()
+                        receive_thread.join()
+                        while not result_queue.empty():
+                            _, decoded = result_queue.get()
+                            if decoded:
+                                try:
+                                    sender_id, message = decoded.split(":", 1)
+                                    self.log_signal.emit(f"📡 {self.bot.name} (GGWave received from {sender_id}): {message}")
+                                    self.last_input = message
+                                    bot_response = get_response(message, self.bot.system_prompt)
+                                    self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
+                                    # Respond via GGWave
+                                    send_via_ggwave(bot_response, self.instance_id)
+                                    self.last_input = bot_response
+                                except ValueError:
+                                    logger.warning(f"Invalid GGWave message format: {decoded}")
+                time.sleep(1)  # Avoid tight loop
+
             except Exception as e:
-                self.log_signal.emit(f"Błąd w głównej pętli: {str(e)}")
-                continue
+                self.log_signal.emit(f"Error in main loop: {str(e)}")
+                time.sleep(1)  # Avoid tight loop on errors
 
 # Interfejs graficzny
 class MainWindow(QMainWindow):
@@ -365,8 +313,10 @@ class MainWindow(QMainWindow):
         self.log_thread = threading.Thread(target=self.process_log_queue)
         self.log_thread.daemon = True
         self.log_thread.start()
+
     def append_log(self, message):
         self.log_display.append(message)
+
     def process_log_queue(self):
         while True:
             try:
@@ -375,16 +325,19 @@ class MainWindow(QMainWindow):
                     self.main_thread.log_signal.emit(record.getMessage())
             except queue.Empty:
                 continue
+
     def start_main_thread(self):
         if not self.main_thread.isRunning():
             self.main_thread.start()
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
+
     def stop_main_thread(self):
         self.main_thread.running = False
         self.main_thread.wait()
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+
     def closeEvent(self, event):
         self.main_thread.running = False
         self.main_thread.wait()
@@ -409,14 +362,3 @@ if __name__ == "__main__":
     window = MainWindow(bot_name, bot_type, server_url, instance_id)
     window.show()
     sys.exit(app.exec_())
-
-
-    #juz jest w ciul odbrze ale po tym jak jeden skonczy mowic od razu przelacza sie na 
-    # sluchanie czlowieka, chodzi o to ze jak jeden bot skonczy mowic to drugi bot go słucha
-    # i to musi dzialac w parze - czyli jak jeden bot mowi to drugi slucha i odwrotnie
-    # i keidy jeden bot skonczy mowic a drugi w tym cazie odlucha to mu odpoiwada i taka rozmowa 
-    # dwuzdanieiowa poeidzmy miedzy dwoma botami musi dzialac bez przerwy
-    # i potem jak oba boty skoncza mowic i si esluchac to znowu wraca do sluchania czlowieka 
-    #informcaja o słuchaniu musi jakos przechodzi przez serwer czy cos takiego nie wiem zeby boty widziały
-    #kiedy zaczca słuchac czlowieka a kiedy mowic do siebie a nie ze powiediałem cos do udgiego odsluchałem
-    #to teraz do czlowieka i nie obchodiz mnie ze drugi bot jesczez gada bo ja chce zeby to dzialalo w parze
