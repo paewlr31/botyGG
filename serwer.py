@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 from pyngrok import ngrok
 import logging
 import time
-import random
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -13,17 +12,15 @@ app = Flask(__name__)
 # Server state to track instances and actions
 server_state = {
     "instances": {},  # {instance_id: {"role": "sender"/"receiver", "bot_name": str, "last_active": float}}
-    "current_action": None,  # {"type": "human_speak"/"bot_speak"/"ggwave_send"/"ggwave_receive", "instance_id": str}
+    "current_action": None,  # {"type": "human_speak"/"ggwave_send", "instance_id": str}
     "action_queue": [],  # Queue of pending actions
     "current_sender": None,  # Current GGWave sender
     "ggwave_mode": False,  # Whether bots are in GGWave mode
-    "ggwave_order": [],  # Order of bots for GGWave communication
     "ggwave_cycle_count": 0  # Number of bots that have spoken in GGWave cycle
 }
 
 # Action types
 ACTION_HUMAN_SPEAK = "human_speak"
-ACTION_BOT_SPEAK = "bot_speak"
 ACTION_GGWAVE_SEND = "ggwave_send"
 ACTION_GGWAVE_RECEIVE = "ggwave_receive"
 
@@ -75,7 +72,7 @@ def check_action_status():
     if server_state["ggwave_mode"]:
         if instance_id == server_state["current_sender"]:
             return jsonify({"status": "active", "action": ACTION_GGWAVE_SEND, "ggwave_mode": True})
-        return jsonify({"status": "queued", "action": ACTION_GGWAVE_RECEIVE, "ggwave_mode": True})
+        return jsonify({"status": "receiver", "action": ACTION_GGWAVE_RECEIVE, "ggwave_mode": True})
     
     # Sprawdź, czy bot ma aktywną akcję
     if server_state["current_action"] and server_state["current_action"]["instance_id"] == instance_id:
@@ -99,11 +96,11 @@ def request_action():
     
     server_state["instances"][instance_id]["last_active"] = time.time()
     
-    # Jeśli w trybie GGWave, tylko nadawca może żądać akcji
-    if server_state["ggwave_mode"] and action_type in [ACTION_GGWAVE_SEND, ACTION_GGWAVE_RECEIVE]:
-        if instance_id == server_state["current_sender"] and action_type == ACTION_GGWAVE_SEND:
+    # Jeśli w trybie GGWave, tylko nadawca może żądać ggwave_send
+    if server_state["ggwave_mode"] and action_type == ACTION_GGWAVE_SEND:
+        if instance_id == server_state["current_sender"]:
             return jsonify({"status": "approved", "action": action_type})
-        return jsonify({"status": "queued"})
+        return jsonify({"status": "receiver"})
     
     # Jeśli nie ma aktywnej akcji, przypisz natychmiast
     if not server_state["current_action"]:
@@ -118,9 +115,6 @@ def request_action():
             logger.info(f"⏳ Zakolejkowano akcję {action_type} dla {instance_id}")
         return jsonify({"status": "queued"})
     
-    # Dla innych akcji
-    server_state["action_queue"].append({"type": action_type, "instance_id": instance_id})
-    logger.info(f"⏳ Zakolejkowano akcję {action_type} dla {instance_id}")
     return jsonify({"status": "queued"})
 
 @app.route("/complete_action", methods=["POST"])
@@ -138,16 +132,6 @@ def complete_action():
             next_action = server_state["action_queue"].pop(0)
             server_state["current_action"] = next_action
             logger.info(f"🎮 Przyznano następną akcję {next_action['type']} dla {next_action['instance_id']}")
-            
-            # Aktualizacja ról dla GGWave w trybie normalnym
-            if next_action["type"] == ACTION_GGWAVE_SEND and not server_state["ggwave_mode"]:
-                if server_state["current_sender"] != next_action["instance_id"]:
-                    server_state["current_sender"] = next_action["instance_id"]
-                    server_state["instances"][next_action["instance_id"]]["role"] = "sender"
-                    for iid in server_state["instances"]:
-                        if iid != next_action["instance_id"]:
-                            server_state["instances"][iid]["role"] = "receiver"
-                    logger.info(f"🔄 Zaktualizowano nadawcę na {next_action['instance_id']}")
         
         return jsonify({"status": "completed"})
     return jsonify({"error": "brak aktywnej akcji dla tej instancji"}), 400
@@ -157,7 +141,6 @@ def switch_roles():
     data = request.json
     instance_id = data["instance_id"]
     if server_state["ggwave_mode"]:
-        # W trybie GGWave przesuń nadawcę na kolejny w kolejce
         if instance_id == server_state["current_sender"]:
             server_state["ggwave_cycle_count"] += 1
             active_instances = [

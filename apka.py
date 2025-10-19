@@ -7,7 +7,6 @@ from logging.handlers import QueueHandler
 import queue
 import threading
 import time
-import random
 import uuid
 import speech_recognition as sr
 from gtts import gTTS
@@ -21,7 +20,8 @@ from queue import Queue
 from openai import OpenAI
 from dotenv import load_dotenv
 import requests
-import json
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -41,7 +41,6 @@ except Exception as e:
 
 # Action types
 ACTION_HUMAN_SPEAK = "human_speak"
-ACTION_BOT_SPEAK = "bot_speak"
 ACTION_GGWAVE_SEND = "ggwave_send"
 ACTION_GGWAVE_RECEIVE = "ggwave_receive"
 
@@ -191,6 +190,19 @@ class Bot:
         self.name = name
         self.system_prompt = system_prompt
 
+# Funkcja do ponawiania żądań HTTP
+def make_request(method, url, json_data, retries=3, backoff_factor=0.3):
+    session = requests.Session()
+    retries = Retry(total=retries, backoff_factor=backoff_factor, status_forcelist=[502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    try:
+        response = session.request(method, url, json=json_data, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Błąd HTTP: {str(e)}")
+        raise
+
 # Wątek główny aplikacji
 class MainThread(QThread):
     log_signal = pyqtSignal(str)
@@ -205,10 +217,11 @@ class MainThread(QThread):
         self.silence_counter = 0
         self.ggwave_mode = False
         try:
-            response = requests.post(
+            response = make_request(
+                "POST",
                 f"{self.server_url}/register",
-                json={"instance_id": self.instance_id, "bot_name": bot_name}
-            ).json()
+                {"instance_id": self.instance_id, "bot_name": bot_name}
+            )
             logger.info(f"📝 Rejestracja instancji: {response}")
         except Exception as e:
             logger.error(f"Błąd rejestracji: {e}")
@@ -220,47 +233,39 @@ class MainThread(QThread):
         while self.running:
             try:
                 # Sprawdź status akcji
-                status_response = requests.post(
+                status_response = make_request(
+                    "POST",
                     f"{self.server_url}/check_action_status",
-                    json={"instance_id": self.instance_id}
-                ).json()
+                    {"instance_id": self.instance_id}
+                )
                 status = status_response.get("status", "idle")
                 self.ggwave_mode = status_response.get("ggwave_mode", False)
 
                 if status == "queued":
-                    if self.ggwave_mode:
-                        self.log_signal.emit(f"📡 {self.bot.name} czeka na swoją kolej w trybie GGWave.")
-                        # Odbieraj w trybie GGWave
-                        action_response = requests.post(
-                            f"{self.server_url}/request_action",
-                            json={"instance_id": self.instance_id, "action_type": ACTION_GGWAVE_RECEIVE}
-                        ).json()
-                        if action_response["status"] == "approved":
-                            result_queue = Queue()
-                            stop_event = threading.Event()
-                            receive_thread = threading.Thread(
-                                target=receive_via_ggwave,
-                                args=(result_queue, stop_event, self.bot.name, self.instance_id, 15.0)
-                            )
-                            receive_thread.start()
-                            time.sleep(15.0)
-                            stop_event.set()
-                            receive_thread.join()
-                            while not result_queue.empty():
-                                _, decoded = result_queue.get()
-                                if decoded:
-                                    try:
-                                        sender_id, message = decoded.split(":", 1)
-                                        self.log_signal.emit(f"📡 {self.bot.name} (GGWave odebrano od {sender_id}): {message}")
-                                        self.last_input = message
-                                    except ValueError:
-                                        logger.warning(f"Nieprawidłowy format wiadomości GGWave: {decoded}")
-                            requests.post(
-                                f"{self.server_url}/complete_action",
-                                json={"instance_id": self.instance_id}
-                            )
-                    else:
-                        self.log_signal.emit(f"⏳ {self.bot.name} czeka w kolejce na swoją kolej.")
+                    self.log_signal.emit(f"⏳ {self.bot.name} czeka w kolejce na swoją kolej.")
+                    time.sleep(1)
+                    continue
+                elif status == "receiver" and self.ggwave_mode:
+                    self.log_signal.emit(f"📡 {self.bot.name} nasłuchuje w trybie GGWave.")
+                    result_queue = Queue()
+                    stop_event = threading.Event()
+                    receive_thread = threading.Thread(
+                        target=receive_via_ggwave,
+                        args=(result_queue, stop_event, self.bot.name, self.instance_id, 10.0)
+                    )
+                    receive_thread.start()
+                    time.sleep(10.0)  # Krótszy timeout dla szybszej reakcji
+                    stop_event.set()
+                    receive_thread.join()
+                    while not result_queue.empty():
+                        _, decoded = result_queue.get()
+                        if decoded:
+                            try:
+                                sender_id, message = decoded.split(":", 1)
+                                self.log_signal.emit(f"📡 {self.bot.name} (GGWave odebrano od {sender_id}): {message}")
+                                self.last_input = message
+                            except ValueError:
+                                logger.warning(f"Nieprawidłowy format wiadomości GGWave: {decoded}")
                     time.sleep(1)
                     continue
                 elif status == "active":
@@ -269,36 +274,45 @@ class MainThread(QThread):
                         context = self.last_input if self.last_input else "Cześć, co słychać?"
                         bot_response = get_response(context, self.bot.system_prompt + " Odpowiadaj w kontekście poprzedniej wiadomości.")
                         self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
-                        send_via_ggwave(bot_response, self.instance_id)
-                        requests.post(
-                            f"{self.server_url}/complete_action",
-                            json={"instance_id": self.instance_id}
+                        action_response = make_request(
+                            "POST",
+                            f"{self.server_url}/request_action",
+                            {"instance_id": self.instance_id, "action_type": ACTION_GGWAVE_SEND}
                         )
-                        role_response = requests.post(
-                            f"{self.server_url}/switch_roles",
-                            json={"instance_id": self.instance_id}
-                        ).json()
-                        self.ggwave_mode = role_response.get("ggwave_mode", False)
-                        self.silence_counter = 0  # Reset po GGWave
+                        if action_response["status"] == "approved":
+                            send_via_ggwave(bot_response, self.instance_id)
+                            make_request(
+                                "POST",
+                                f"{self.server_url}/complete_action",
+                                {"instance_id": self.instance_id}
+                            )
+                            role_response = make_request(
+                                "POST",
+                                f"{self.server_url}/switch_roles",
+                                {"instance_id": self.instance_id}
+                            )
+                            self.ggwave_mode = role_response.get("ggwave_mode", False)
+                            self.silence_counter = 0  # Reset po GGWave
                     elif status_response["action"] == ACTION_HUMAN_SPEAK:
                         # Bot wykonuje human_speak
                         bot_response = get_response(self.last_input, self.bot.system_prompt)
                         self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
                         speak(f"{self.bot.name} mówi: {bot_response}")
                         self.last_input = bot_response
-                        requests.post(
+                        make_request(
+                            "POST",
                             f"{self.server_url}/complete_action",
-                            json={"instance_id": self.instance_id}
+                            {"instance_id": self.instance_id}
                         )
                     time.sleep(1)
                     continue
 
                 # Status idle - nasłuchuj człowieka
-                role_response = requests.post(
+                role_response = make_request(
+                    "POST",
                     f"{self.server_url}/get_role",
-                    json={"instance_id": self.instance_id}
-                ).json()
-                role = role_response.get("role", "receiver")
+                    {"instance_id": self.instance_id}
+                )
                 self.ggwave_mode = role_response.get("ggwave_mode", False)
 
                 if not self.ggwave_mode:
@@ -314,10 +328,11 @@ class MainThread(QThread):
                             self.running = False
                             break
                         
-                        action_response = requests.post(
+                        action_response = make_request(
+                            "POST",
                             f"{self.server_url}/request_action",
-                            json={"instance_id": self.instance_id, "action_type": ACTION_HUMAN_SPEAK}
-                        ).json()
+                            {"instance_id": self.instance_id, "action_type": ACTION_HUMAN_SPEAK}
+                        )
                         
                         if action_response["status"] == "approved":
                             self.last_input = user_input
@@ -328,10 +343,10 @@ class MainThread(QThread):
                         self.silence_counter += 1
                         self.log_signal.emit(f"🔇 {self.bot.name}: Brak mowy, licznik ciszy: {self.silence_counter}")
                         if self.silence_counter >= 4:
-                            # Pierwszy bot zgłasza tryb GGWave
-                            requests.post(
+                            make_request(
+                                "POST",
                                 f"{self.server_url}/trigger_ggwave_mode",
-                                json={"instance_id": self.instance_id}
+                                {"instance_id": self.instance_id}
                             )
                             self.ggwave_mode = True
                             self.silence_counter = 0
@@ -340,7 +355,7 @@ class MainThread(QThread):
 
             except Exception as e:
                 self.log_signal.emit(f"Błąd w głównej pętli: {str(e)}")
-                time.sleep(1)
+                time.sleep(2)  # Dłuższy sleep przy błędach sieciowych
 
 # Interfejs graficzny
 class MainWindow(QMainWindow):
@@ -399,7 +414,6 @@ class MainWindow(QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
-    # Parsowanie argumentów linii poleceń
     parser = argparse.ArgumentParser(description="Bot Conversation App")
     parser.add_argument("--imieBota", required=True, help="Imię bota")
     parser.add_argument("--typBota", required=True, help="Typ/charakter bota")
@@ -408,11 +422,8 @@ if __name__ == "__main__":
     bot_name = args.imieBota
     bot_type = args.typBota
     server_url = args.serverUrl
-    # Generowanie unikalnego identyfikatora instancji
     instance_id = str(uuid.uuid4())
-    # Konfiguracja urządzeń audio
-    sd.default.device = (13, 3)  # Dostosuj do swoich urządzeń (input_id, output_id)
-    # Uruchomienie aplikacji
+    sd.default.device = (13, 3)  # Dostosuj do swoich urządzeń
     app = QApplication(sys.argv)
     window = MainWindow(bot_name, bot_type, server_url, instance_id)
     window.show()
