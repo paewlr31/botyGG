@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from pyngrok import ngrok
 import logging
 import time
+import random
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -16,7 +17,8 @@ server_state = {
     "action_queue": [],  # Queue of pending actions
     "current_sender": None,  # Current GGWave sender
     "ggwave_mode": False,  # Whether bots are in GGWave mode
-    "ggwave_cycle_count": 0  # Number of bots that have spoken in GGWave cycle
+    "ggwave_cycle_count": 0,  # Number of bots that have spoken in GGWave cycle
+    "spoken_instances": set()  # Track instances that have spoken in the current GGWave cycle
 }
 
 # Action types
@@ -99,6 +101,8 @@ def request_action():
     # Jeśli w trybie GGWave, tylko nadawca może żądać ggwave_send
     if server_state["ggwave_mode"] and action_type == ACTION_GGWAVE_SEND:
         if instance_id == server_state["current_sender"]:
+            server_state["current_action"] = {"type": action_type, "instance_id": instance_id}
+            logger.info(f"🎮 Przyznano akcję {action_type} dla {instance_id}")
             return jsonify({"status": "approved", "action": action_type})
         return jsonify({"status": "receiver"})
     
@@ -127,13 +131,14 @@ def complete_action():
         server_state["current_action"] = None
         logger.info(f"✅ Zakończono akcję {completed_action} dla {instance_id}")
         
-        # Przydziel następną akcję z kolejki
+        # Przydziel następną akcję z kolejki (tylko dla human_speak)
         if server_state["action_queue"]:
             next_action = server_state["action_queue"].pop(0)
             server_state["current_action"] = next_action
             logger.info(f"🎮 Przyznano następną akcję {next_action['type']} dla {next_action['instance_id']}")
         
         return jsonify({"status": "completed"})
+    logger.error(f"❌ Błąd: Brak aktywnej akcji dla {instance_id}, current_action: {server_state['current_action']}")
     return jsonify({"error": "brak aktywnej akcji dla tej instancji"}), 400
 
 @app.route("/switch_roles", methods=["POST"])
@@ -143,25 +148,36 @@ def switch_roles():
     if server_state["ggwave_mode"]:
         if instance_id == server_state["current_sender"]:
             server_state["ggwave_cycle_count"] += 1
+            server_state["spoken_instances"].add(instance_id)
             active_instances = [
                 iid for iid, info in server_state["instances"].items()
-                if info["last_active"] > time.time() - 30 and iid != instance_id
+                if info["last_active"] > time.time() - 30 and iid != instance_id and iid not in server_state["spoken_instances"]
             ]
             if server_state["ggwave_cycle_count"] >= len(server_state["instances"]):
                 # Zakończ tryb GGWave
                 server_state["ggwave_mode"] = False
                 server_state["ggwave_cycle_count"] = 0
+                server_state["spoken_instances"].clear()
                 server_state["current_sender"] = None
                 for iid in server_state["instances"]:
                     server_state["instances"][iid]["role"] = "receiver"
                 logger.info("🔄 Zakończono tryb GGWave, powrót do nasłuchiwania człowieka")
             elif active_instances:
-                server_state["current_sender"] = active_instances[0]
+                server_state["current_sender"] = random.choice(active_instances)
                 server_state["instances"][server_state["current_sender"]]["role"] = "sender"
                 for iid in server_state["instances"]:
                     if iid != server_state["current_sender"]:
                         server_state["instances"][iid]["role"] = "receiver"
                 logger.info(f"🔄 W trybie GGWave zmieniono nadawcę na {server_state['current_sender']}")
+            else:
+                # Jeśli nie ma więcej aktywnych botów, zakończ tryb GGWave
+                server_state["ggwave_mode"] = False
+                server_state["ggwave_cycle_count"] = 0
+                server_state["spoken_instances"].clear()
+                server_state["current_sender"] = None
+                for iid in server_state["instances"]:
+                    server_state["instances"][iid]["role"] = "receiver"
+                logger.info("🔄 Zakończono tryb GGWave z braku aktywnych botów")
         return jsonify({"status": "roles updated", "ggwave_mode": server_state["ggwave_mode"]})
     
     # Normalny tryb
@@ -171,7 +187,7 @@ def switch_roles():
             if info["last_active"] > time.time() - 30 and iid != instance_id
         ]
         if active_instances:
-            server_state["current_sender"] = active_instances[0]
+            server_state["current_sender"] = random.choice(active_instances)
             server_state["instances"][server_state["current_sender"]]["role"] = "sender"
             server_state["instances"][instance_id]["role"] = "receiver"
             logger.info(f"🔄 Switched sender to {server_state['current_sender']}")
@@ -189,6 +205,7 @@ def trigger_ggwave_mode():
     
     server_state["ggwave_mode"] = True
     server_state["ggwave_cycle_count"] = 0
+    server_state["spoken_instances"].clear()
     server_state["current_sender"] = instance_id
     server_state["instances"][instance_id]["role"] = "sender"
     for iid in server_state["instances"]:

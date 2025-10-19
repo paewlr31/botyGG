@@ -66,7 +66,7 @@ def send_via_ggwave(message: str, instance_id: str, protocolId: int = 1, volume:
         logger.error(f"Błąd przy wysyłaniu GGWave: {e}")
         return None
 
-def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str, instance_id: str, silence_timeout: float = 15.0):
+def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str, instance_id: str, silence_timeout: float = 10.0):
     if ggwave_instance is None:
         logger.error("❌ Brak instancji GGWave — nie można odbierać.")
         queue.put((bot_name, None))
@@ -210,7 +210,7 @@ class MainThread(QThread):
     def __init__(self, bot_name, bot_type, server_url, instance_id):
         super().__init__()
         self.running = False
-        self.bot = Bot(bot_name, f"Jesteś {bot_type}, który odpowiada w języku polskim.")
+        self.bot = Bot(bot_name, f"Jesteś {bot_type}, który odpowiada w języku polskim. Kontynuuj temat rozmowy, odnosząc się do poprzedniej wiadomości.")
         self.server_url = server_url
         self.instance_id = instance_id
         self.last_input = None
@@ -254,7 +254,7 @@ class MainThread(QThread):
                         args=(result_queue, stop_event, self.bot.name, self.instance_id, 10.0)
                     )
                     receive_thread.start()
-                    time.sleep(10.0)  # Krótszy timeout dla szybszej reakcji
+                    time.sleep(10.0)
                     stop_event.set()
                     receive_thread.join()
                     while not result_queue.empty():
@@ -268,42 +268,45 @@ class MainThread(QThread):
                                 logger.warning(f"Nieprawidłowy format wiadomości GGWave: {decoded}")
                     time.sleep(1)
                     continue
-                elif status == "active":
-                    if self.ggwave_mode and status_response["action"] == ACTION_GGWAVE_SEND:
-                        # Bot jest nadawcą w trybie GGWave
-                        context = self.last_input if self.last_input else "Cześć, co słychać?"
-                        bot_response = get_response(context, self.bot.system_prompt + " Odpowiadaj w kontekście poprzedniej wiadomości.")
-                        self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
-                        action_response = make_request(
-                            "POST",
-                            f"{self.server_url}/request_action",
-                            {"instance_id": self.instance_id, "action_type": ACTION_GGWAVE_SEND}
-                        )
-                        if action_response["status"] == "approved":
-                            send_via_ggwave(bot_response, self.instance_id)
-                            make_request(
-                                "POST",
-                                f"{self.server_url}/complete_action",
-                                {"instance_id": self.instance_id}
-                            )
-                            role_response = make_request(
-                                "POST",
-                                f"{self.server_url}/switch_roles",
-                                {"instance_id": self.instance_id}
-                            )
-                            self.ggwave_mode = role_response.get("ggwave_mode", False)
-                            self.silence_counter = 0  # Reset po GGWave
-                    elif status_response["action"] == ACTION_HUMAN_SPEAK:
-                        # Bot wykonuje human_speak
-                        bot_response = get_response(self.last_input, self.bot.system_prompt)
-                        self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
-                        speak(f"{self.bot.name} mówi: {bot_response}")
-                        self.last_input = bot_response
+                elif status == "active" and self.ggwave_mode and status_response["action"] == ACTION_GGWAVE_SEND:
+                    # Bot jest nadawcą w trybie GGWave
+                    context = self.last_input if self.last_input else "Cześć, co słychać?"
+                    bot_response = get_response(context, self.bot.system_prompt)
+                    self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
+                    action_response = make_request(
+                        "POST",
+                        f"{self.server_url}/request_action",
+                        {"instance_id": self.instance_id, "action_type": ACTION_GGWAVE_SEND}
+                    )
+                    if action_response["status"] == "approved":
+                        send_via_ggwave(bot_response, self.instance_id)
                         make_request(
                             "POST",
                             f"{self.server_url}/complete_action",
                             {"instance_id": self.instance_id}
                         )
+                        role_response = make_request(
+                            "POST",
+                            f"{self.server_url}/switch_roles",
+                            {"instance_id": self.instance_id}
+                        )
+                        self.ggwave_mode = role_response.get("ggwave_mode", False)
+                        self.silence_counter = 0
+                    else:
+                        self.log_signal.emit(f"❌ {self.bot.name}: Nie uzyskano zgody na GGWave send")
+                    time.sleep(1)
+                    continue
+                elif status == "active" and status_response["action"] == ACTION_HUMAN_SPEAK:
+                    # Bot wykonuje human_speak
+                    bot_response = get_response(self.last_input, self.bot.system_prompt)
+                    self.log_signal.emit(f"🤖 {self.bot.name}: {bot_response}")
+                    speak(f"{self.bot.name} mówi: {bot_response}")
+                    self.last_input = bot_response
+                    make_request(
+                        "POST",
+                        f"{self.server_url}/complete_action",
+                        {"instance_id": self.instance_id}
+                    )
                     time.sleep(1)
                     continue
 
@@ -355,7 +358,7 @@ class MainThread(QThread):
 
             except Exception as e:
                 self.log_signal.emit(f"Błąd w głównej pętli: {str(e)}")
-                time.sleep(2)  # Dłuższy sleep przy błędach sieciowych
+                time.sleep(2)
 
 # Interfejs graficzny
 class MainWindow(QMainWindow):
