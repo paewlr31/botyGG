@@ -1,6 +1,15 @@
 dodać jakiś formtend - duzo botow jako osobne apliakcje w senise instacje apliakcji, 
 boty p2p?
+info, boty rozmowa jak sie przelaczaja to wiedza jakim sa urzadzeniem, ggwave
+
+#odpalamy w dwoch terminalach i gadamy jak na dwoch urzadzeniach bot+czlowiek w jednej instacji programu
+#tylko jak rozpoznawac te rozne instancje?
+
 
 dużo osób - dodac osoby,
 nagrać filmik,
 diagramy
+
+jedna ptela dwa boty i czlowiek: 7+5+5, 
+petla trzy boty i dwaj ludzie: 5+5+5+7+7 (ludzi tez musz byc typu sender receiver)
+i tak dalej i tak dalej
