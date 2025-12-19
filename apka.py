@@ -45,7 +45,7 @@ ACTION_GGWAVE_SEND = "ggwave_send"
 ACTION_GGWAVE_RECEIVE = "ggwave_receive"
 
 # Funkcje GGWave
-def send_via_ggwave(message: str, instance_id: str, protocolId: int = 1, volume: int = 80):
+def send_via_ggwave(message: str, instance_id: str, protocolId: int = 1, volume: int = 100):
     try:
         if not message:
             logger.warning("Pusta wiadomość, pomijam wysyłanie.")
@@ -66,7 +66,7 @@ def send_via_ggwave(message: str, instance_id: str, protocolId: int = 1, volume:
         logger.error(f"Błąd przy wysyłaniu GGWave: {e}")
         return None
 
-def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str, instance_id: str, silence_timeout: float = 10.0):
+def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str, instance_id: str, silence_timeout: float = 15.0):
     if ggwave_instance is None:
         logger.error("❌ Brak instancji GGWave — nie można odbierać.")
         queue.put((bot_name, None))
@@ -119,7 +119,7 @@ def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str,
                 if time.time() - last_data_time > silence_timeout:
                     logger.info(f"⏰ [{bot_name}] Timeout ciszy ({silence_timeout}s)")
                     break
-                if time.time() - start_time > 30:
+                if time.time() - start_time > 60:  # Zwiększono do 60 sekund
                     logger.info(f"⏰ [{bot_name}] Maksymalny czas nasłuchiwania")
                     break
                 time.sleep(0.1)
@@ -133,6 +133,30 @@ def receive_via_ggwave(queue: Queue, stop_event: threading.Event, bot_name: str,
     else:
         logger.info(f"❌ {bot_name} nic nie odebrał")
         queue.put((bot_name, None))
+
+# Funkcja testowa GGWave
+def test_ggwave_send(message: str, instance_id: str):
+    logger.info(f"Testowe wysyłanie GGWave: {message}")
+    send_via_ggwave(message, instance_id, volume=100)
+
+def test_ggwave_receive(bot_name: str, instance_id: str):
+    logger.info(f"Testowe nasłuchiwanie GGWave dla {bot_name}")
+    result_queue = Queue()
+    stop_event = threading.Event()
+    receive_thread = threading.Thread(
+        target=receive_via_ggwave,
+        args=(result_queue, stop_event, bot_name, instance_id, 15.0)
+    )
+    receive_thread.start()
+    time.sleep(15.0)
+    stop_event.set()
+    receive_thread.join()
+    while not result_queue.empty():
+        _, decoded = result_queue.get()
+        if decoded:
+            logger.info(f"Test GGWave odebrano: {decoded}")
+        else:
+            logger.info("Test GGWave: nic nie odebrano")
 
 # Funkcja OpenAI
 def get_response(user_input, system_prompt):
@@ -240,6 +264,7 @@ class MainThread(QThread):
                 )
                 status = status_response.get("status", "idle")
                 self.ggwave_mode = status_response.get("ggwave_mode", False)
+                self.log_signal.emit(f"📡 Status: {status}, GGWave mode: {self.ggwave_mode}, Action: {status_response.get('action')}")
 
                 if status == "queued":
                     self.log_signal.emit(f"⏳ {self.bot.name} czeka w kolejce na swoją kolej.")
@@ -251,10 +276,10 @@ class MainThread(QThread):
                     stop_event = threading.Event()
                     receive_thread = threading.Thread(
                         target=receive_via_ggwave,
-                        args=(result_queue, stop_event, self.bot.name, self.instance_id, 10.0)
+                        args=(result_queue, stop_event, self.bot.name, self.instance_id, 15.0)
                     )
                     receive_thread.start()
-                    time.sleep(10.0)
+                    time.sleep(15.0)
                     stop_event.set()
                     receive_thread.join()
                     while not result_queue.empty():
@@ -374,8 +399,10 @@ class MainWindow(QMainWindow):
         self.layout.addWidget(self.log_display)
         self.start_button = QPushButton("Uruchom")
         self.stop_button = QPushButton("Zatrzymaj")
+        self.test_ggwave_button = QPushButton("Testuj GGWave")  # Nowy przycisk
         self.layout.addWidget(self.start_button)
         self.layout.addWidget(self.stop_button)
+        self.layout.addWidget(self.test_ggwave_button)
         self.main_thread = MainThread(bot_name, bot_type, server_url, instance_id)
         self.main_thread.log_signal.connect(self.append_log)
         self.log_queue = queue.Queue()
@@ -383,6 +410,7 @@ class MainWindow(QMainWindow):
         logger.addHandler(self.log_handler)
         self.start_button.clicked.connect(self.start_main_thread)
         self.stop_button.clicked.connect(self.stop_main_thread)
+        self.test_ggwave_button.clicked.connect(self.test_ggwave)
         self.log_thread = threading.Thread(target=self.process_log_queue)
         self.log_thread.daemon = True
         self.log_thread.start()
@@ -411,6 +439,21 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
 
+    def test_ggwave(self):
+        # Uruchom test GGWave (nadawanie i nasłuchiwanie)
+        test_thread = threading.Thread(
+            target=test_ggwave_send,
+            args=("Testowa wiadomość", self.main_thread.instance_id)
+        )
+        test_thread.start()
+        test_thread.join()
+        test_receive_thread = threading.Thread(
+            target=test_ggwave_receive,
+            args=(self.main_thread.bot.name, self.main_thread.instance_id)
+        )
+        test_receive_thread.start()
+        test_receive_thread.join()
+
     def closeEvent(self, event):
         self.main_thread.running = False
         self.main_thread.wait()
@@ -426,7 +469,13 @@ if __name__ == "__main__":
     bot_type = args.typBota
     server_url = args.serverUrl
     instance_id = str(uuid.uuid4())
-    sd.default.device = (13, 3)  # Dostosuj do swoich urządzeń
+
+    # Wyświetl listę urządzeń audio
+    logger.info("Dostępne urządzenia audio:")
+    logger.info(sd.query_devices())
+    # Ustaw urządzenia audio dynamicznie lub ręcznie
+    # sd.default.device = (0, 1)  # Dostosuj do swoich urządzeń
+
     app = QApplication(sys.argv)
     window = MainWindow(bot_name, bot_type, server_url, instance_id)
     window.show()

@@ -10,7 +10,7 @@ playsound
 
 PyQt5==5.15.7
 ggwave-wheels
-soundevice
+sounddevice
 numpy
 
 

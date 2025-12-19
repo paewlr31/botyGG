@@ -1,0 +1,47 @@
+@startuml
+' Prosty diagram sekwencji dla Boty GG
+skinparam dpi 150
+
+actor User
+participant MainWindow
+participant MainThread
+participant ExternalFunctions
+participant FlaskServer
+
+User -> MainWindow: Uruchom aplikacje
+MainWindow -> MainThread: __init__(bot_name, server_url, instance_id)
+MainThread -> FlaskServer: POST /register(instance_id)
+MainWindow -> MainThread: start_main_thread()
+
+loop Komunikacja czlowiek-bot
+  User -> ExternalFunctions: Mow (dzwiek)
+  ExternalFunctions -> MainThread: listen() -> user_input
+  alt user_input != ""
+    MainThread -> FlaskServer: POST /request_action("human_speak")
+    MainThread -> ExternalFunctions: get_response(user_input)
+    ExternalFunctions -> MainThread: bot_response
+    MainThread -> ExternalFunctions: speak(bot_response)
+    MainThread -> FlaskServer: POST /complete_action()
+  end alt
+end loop
+
+loop Komunikacja bot-bot (GGWave)
+  MainThread -> FlaskServer: POST /check_action_status()
+  alt status == "receiver"
+    MainThread -> ExternalFunctions: receive_via_ggwave()
+    ExternalFunctions -> MainThread: message
+  else status == "active"
+    MainThread -> ExternalFunctions: send_via_ggwave(message, instance_id)
+    MainThread -> FlaskServer: POST /complete_action()
+  end alt
+end loop
+
+User -> MainWindow: Zamknij okno
+MainWindow -> MainThread: running = False
+
+note right
+  System obsluguje komunikacje czlowiek-bot i bot-bot.
+  Przygotowany do 1 instancja = 1 czlowiek + 1 bot.
+end note
+
+@enduml
